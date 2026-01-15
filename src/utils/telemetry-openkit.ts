@@ -55,8 +55,8 @@ class DynatraceMcpTelemetry implements Telemetry {
       this.openKit = new OpenKitBuilder(endpointUrl, applicationId, parseInt(deviceId, 10))
         .withApplicationVersion(getPackageJsonVersion())
         .withOperatingSystem(`${os.platform()} ${os.release()}`)
-        .withManufacturer('Dynatrace-OSS')
-        .withModelId('Dynatrace-Managed-MCP-Server')
+        .withManufacturer('dynatrace-oss')
+        .withModelId('dynatrace-managed-mcp-server')
         .build();
 
       return new Promise<boolean>((resolve) => {

@@ -2,6 +2,10 @@
 
 ## Unreleased Changes
 
+## 0.4.0
+
+- Use lowercase mcpName
+
 ## 0.3.0
 
 - Fixed server.json schema validation
