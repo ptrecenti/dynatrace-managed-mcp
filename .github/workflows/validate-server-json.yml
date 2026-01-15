@@ -1,0 +1,42 @@
+name: Validate JSON Schema
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install jsonschema
+
+      - name: Ensure jq is present
+        run: sudo apt update && sudo apt install -y jq
+
+      - name: Extract $schema URL from server.json
+        id: schema
+        run: |
+          SCHEMA_URL=$(jq -r '."$schema" // empty' server.json)
+          echo "url=$SCHEMA_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Download schema
+        env:
+          SCHEMA_URL: ${{ steps.schema.outputs.url }}
+        run: |
+          curl -fL --retry 3 --retry-connrefused --connect-timeout 10 "$SCHEMA_URL" -o server.schema.json
+          echo "Downloaded schema to server.schema.json"
+
+      - name: Run JSON validation
+        run: python .github/scripts/server_schema_validator.py
