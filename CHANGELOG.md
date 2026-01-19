@@ -2,6 +2,10 @@
 
 ## Unreleased Changes
 
+## 0.5.0
+
+- Prepare release to ghcr
+
 ## 0.4.0
 
 - Use lowercase mcpName
