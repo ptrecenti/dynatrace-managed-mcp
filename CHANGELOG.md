@@ -4,6 +4,7 @@
 
 ## 0.5.0
 
+- Add arm container image
 - Prepare release to ghcr
 
 ## 0.4.0
