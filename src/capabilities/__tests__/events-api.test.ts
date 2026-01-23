@@ -1,18 +1,21 @@
 import { EventsApiClient, Event } from '../events-api';
-import { ManagedAuthClient } from '../../authentication/managed-auth-client';
+import { ManagedAuthClientManager } from '../../authentication/managed-auth-client';
 import { readFileSync } from 'fs';
 
 jest.mock('../../authentication/managed-auth-client');
 
 describe('EventsApiClient', () => {
-  let mockAuthClient: jest.Mocked<ManagedAuthClient>;
+  let mockAuthManager: jest.Mocked<ManagedAuthClientManager>;
   let client: EventsApiClient;
 
   beforeEach(() => {
-    mockAuthClient = {
-      makeRequest: jest.fn(),
+    mockAuthManager = {
+      makeRequests: jest.fn(),
+      getBaseUrl: jest.fn(() => {
+        return 'http://dashboardbaseurl.com/e/environment_id';
+      }),
     } as any;
-    client = new EventsApiClient(mockAuthClient);
+    client = new EventsApiClient(mockAuthManager);
   });
 
   afterEach(() => {
@@ -21,62 +24,79 @@ describe('EventsApiClient', () => {
 
   describe('queryEvents', () => {
     it('should query events with all parameters', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.queryEvents({
-        from: 'now-1h',
-        to: 'now',
-        eventType: 'CUSTOM_INFO',
-        entitySelector: 'type(SERVICE)',
-        pageSize: 50,
-      });
+      const result = await client.queryEvents(
+        {
+          from: 'now-1h',
+          to: 'now',
+          eventType: 'CUSTOM_INFO',
+          entitySelector: 'type(SERVICE)',
+          pageSize: 50,
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/events', {
-        from: 'now-1h',
-        to: 'now',
-        pageSize: 50,
-        eventType: 'CUSTOM_INFO',
-        entitySelector: 'type(SERVICE)',
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/events',
+        {
+          from: 'now-1h',
+          to: 'now',
+          pageSize: 50,
+          eventType: 'CUSTOM_INFO',
+          entitySelector: 'type(SERVICE)',
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
 
     it('should use defaults when not specified', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      await client.queryEvents({
-        from: 'now-1h',
-        to: 'now',
-      });
+      await client.queryEvents(
+        {
+          from: 'now-1h',
+          to: 'now',
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/events', {
-        from: 'now-1h',
-        to: 'now',
-        pageSize: 100,
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/events',
+        {
+          from: 'now-1h',
+          to: 'now',
+          pageSize: 100,
+        },
+        'testAlias',
+      );
     });
   });
 
   describe('getEventDetails', () => {
     it('should get event details by ID', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.getEventDetails('event-123');
+      const result = await client.getEventDetails('event-123', 'testAlias');
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/events/event-123');
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith('/api/v2/events/event-123', {}, 'testAlias');
       expect(result).toEqual(mockResponse);
     });
   });
 
   describe('formatList', () => {
     it('should format list', async () => {
-      const mockResponse = JSON.parse(readFileSync('src/capabilities/__tests__/resources/queryEvents.json', 'utf8'));
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/queryEvents.json', 'utf8'))],
+      ]);
 
-      const response = await client.queryEvents({ from: 'now-1h', to: 'now' });
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.queryEvents({ from: 'now-1h', to: 'now' }, 'ALL_ENVIRONMENTS');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -98,10 +118,16 @@ describe('EventsApiClient', () => {
         startTime: 1640995200000 + i * 1000,
         entityName: `service-${i}`,
       }));
-      const response = {
-        totalCount: 100,
-        events: mockEvents,
-      };
+
+      const response = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 100,
+            events: mockEvents,
+          },
+        ],
+      ]);
 
       const result = client.formatList(response);
 
@@ -112,12 +138,18 @@ describe('EventsApiClient', () => {
     });
 
     it('should format list when sparse problem', async () => {
-      const mockResponse = {
-        events: [{}],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            events: [{}],
+          },
+        ],
+      ]);
 
-      const response = await client.queryEvents({ from: 'now-1h', to: 'now' });
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.queryEvents({ from: 'now-1h', to: 'now' }, 'testAlias');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -131,10 +163,10 @@ describe('EventsApiClient', () => {
     });
 
     it('should format list when empty', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.queryEvents({ from: 'now-1h', to: 'now' });
+      const response = await client.queryEvents({ from: 'now-1h', to: 'now' }, 'testAlias');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -142,13 +174,19 @@ describe('EventsApiClient', () => {
     });
 
     it('should handle empty list', async () => {
-      const mockResponse = {
-        totalCount: 0,
-        events: [],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 0,
+            events: [],
+          },
+        ],
+      ]);
 
-      const response = await client.queryEvents({ from: 'now-1h', to: 'now' });
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.queryEvents({ from: 'now-1h', to: 'now' }, 'testAlias');
       const result = client.formatList(response);
 
       expect(result).toContain('Listing 0 events');
@@ -157,28 +195,29 @@ describe('EventsApiClient', () => {
 
   describe('formatDetails', () => {
     it('should format details', async () => {
-      const mockResponse = JSON.parse(
-        readFileSync('src/capabilities/__tests__/resources/getEventDetails.json', 'utf8'),
-      );
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/getEventDetails.json', 'utf8'))],
+      ]);
 
-      const response = await client.getEventDetails('my-id');
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.getEventDetails('my-id', 'testAlias');
       const result = client.formatDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Event details in the following json');
+      expect(result).toContain('Event details from environment testAlias in the following json');
       expect(result).toContain('"eventId":"-2899693953000578799_1763288686574"');
     });
 
     it('should format details when sparse problem', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.getEventDetails('my-id');
+      const response = await client.getEventDetails('my-id', 'testAlias');
       const result = client.formatDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Event details in the following json');
+      expect(result).toContain('Event details from environment testAlias in the following json');
       expect(result).toContain('{}');
     });
   });

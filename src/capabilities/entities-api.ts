@@ -1,6 +1,5 @@
-import { ManagedAuthClient } from '../authentication/managed-auth-client.js';
+import { ManagedAuthClientManager } from '../authentication/managed-auth-client.js';
 
-import { formatTimestamp } from '../utils/date-formatter';
 import { logger } from '../utils/logger';
 
 export interface EntityQueryParams {
@@ -54,13 +53,6 @@ export interface Tag {
   value?: string;
 }
 
-export interface Relationship {
-  id?: string;
-  type?: string;
-  fromEntityId?: string;
-  toEntityId?: string;
-}
-
 export interface EntityType {
   type?: string;
   displayName?: string;
@@ -73,42 +65,60 @@ export class EntitiesApiClient {
   static readonly MAX_PROPERTIES_DISPLAY = 11;
   static readonly MAX_MANAGEMENT_ZONES_DISPLAY = 11;
 
-  constructor(private authClient: ManagedAuthClient) {}
+  constructor(private authManager: ManagedAuthClientManager) {}
 
-  async listEntityTypes(): Promise<ListEntityTypesResponse> {
+  async listEntityTypes(environment_aliases: string): Promise<Map<string, ListEntityTypesResponse>> {
     // Deliberately large page size; will format this concisely rather than returning all json in tool response.
     // Want to get all of them (with reason), otherwise trying to pull out common types won't work.
     const params: Record<string, any> = {
       pageSize: 500,
     };
-    const response = await this.authClient.makeRequest('/api/v2/entityTypes', params);
-    logger.debug('listEntityTypes response', { data: response });
-    return response;
+    const responses = await this.authManager.makeRequests('/api/v2/entityTypes', params, environment_aliases);
+    logger.debug('listEntityTypes response', { data: responses });
+    return responses;
   }
 
-  async getEntityTypeDetails(entityType: string): Promise<any> {
-    const response = await this.authClient.makeRequest(`/api/v2/entityTypes/${encodeURIComponent(entityType)}`);
-    logger.debug(`getEntityTypeDetails response, entityType=${entityType}`, { data: response });
-    return response;
+  async getEntityTypeDetails(entityType: string, environment_aliases: string): Promise<Map<string, any>> {
+    const responses = await this.authManager.makeRequests(
+      `/api/v2/entityTypes/${encodeURIComponent(entityType)}`,
+      {},
+      environment_aliases,
+    );
+    logger.debug(`getEntityTypeDetails response, entityType=${entityType}`, { data: responses });
+    return responses;
   }
 
-  async getEntityDetails(entityId: string): Promise<any> {
-    const response = await this.authClient.makeRequest(`/api/v2/entities/${encodeURIComponent(entityId)}`);
-    logger.debug(`getEntityDetails response, entityId=${entityId}`, { data: response });
-    return response;
+  async getEntityDetails(entityId: string, environment_aliases: string): Promise<Map<string, any>> {
+    const responses = await this.authManager.makeRequests(
+      `/api/v2/entities/${encodeURIComponent(entityId)}`,
+      {},
+      environment_aliases,
+    );
+    logger.debug(`getEntityDetails response, entityId=${entityId}`, { data: responses });
+    return responses;
   }
 
-  async getEntityRelationships(entityId: string): Promise<GetEntityRelationshipsResponse> {
-    const response = await this.getEntityDetails(entityId);
+  async getEntityRelationships(
+    entityId: string,
+    environment_aliases: string,
+  ): Promise<Map<string, GetEntityRelationshipsResponse>> {
+    const entityDetailsResponse = await this.getEntityDetails(entityId, environment_aliases);
+    let cleanResponses = new Map<string, any>();
+    for (const [alias, data] of entityDetailsResponse) {
+      cleanResponses.set(alias, {
+        entityId: data.entityId,
+        fromRelationships: data.fromRelationships,
+        toRelationships: data.toRelationships,
+      });
+    }
 
-    return {
-      entityId: response.entityId,
-      fromRelationships: response.fromRelationships,
-      toRelationships: response.toRelationships,
-    };
+    return cleanResponses;
   }
 
-  async queryEntities(params: EntityQueryParams): Promise<ListEntitiesResponse> {
+  async queryEntities(
+    params: EntityQueryParams,
+    environment_aliases: string,
+  ): Promise<Map<string, ListEntitiesResponse>> {
     const queryParams = {
       pageSize: params.pageSize || EntitiesApiClient.API_PAGE_SIZE,
       entitySelector: params.entitySelector,
@@ -118,87 +128,97 @@ export class EntitiesApiClient {
       ...(params.sort && { sort: params.sort }),
     };
 
-    const response = await this.authClient.makeRequest('/api/v2/entities', queryParams);
-    logger.debug('queryEntities response: ', { queryParams: queryParams, data: response });
-    return response;
+    const responses = await this.authManager.makeRequests('/api/v2/entities', queryParams, environment_aliases);
+    logger.debug('queryEntities response: ', { queryParams: queryParams, data: responses });
+    return responses;
   }
 
-  formatEntityList(response: ListEntitiesResponse): string {
-    let totalCount = response.totalCount || -1;
-    let numEntities = response.entities?.length || 0;
-    let isLimited = totalCount != 0 - 1 && totalCount > numEntities;
+  formatEntityList(responses: Map<string, ListEntitiesResponse>): string {
+    let result = '';
+    let totalNumEntities = 0;
+    let anyLimited = false;
+    let aliases: string[] = [];
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      let totalCount = data.totalCount || -1;
+      let numEntities = data.entities?.length || 0;
+      totalNumEntities += numEntities;
+      let isLimited = totalCount != 0 - 1 && totalCount > numEntities;
 
-    let result = 'Listing ' + numEntities + (totalCount == -1 ? '' : ' of ' + totalCount) + ' entities.\n';
-    if (isLimited) {
       result +=
-        'Not showing all matching entities. Consider using more specific filters (entitySelector) to get complete results.\n';
+        'Listing ' +
+        numEntities +
+        (totalCount == -1 ? '' : ' of ' + totalCount) +
+        ' entities from environment ' +
+        alias +
+        '.\n';
+      if (isLimited) {
+        result +=
+          'Not showing all matching entities. Consider using more specific filters (entitySelector) to get complete results.\n';
+        anyLimited = true;
+      }
+
+      data.entities?.forEach((entity: any) => {
+        // Truncate very long names for readability
+        let displayName = entity.displayName;
+        if (displayName.length > 60) {
+          displayName = displayName.substring(0, 57) + '...';
+        }
+
+        result += `entityId: ${entity.entityId}\n`;
+        result += `  type: ${entity.type || entity.entityType}\n`;
+        result += `  displayName: ${displayName}\n`;
+
+        if (entity.tags && entity.tags.length > 0) {
+          const tags = entity.tags
+            .slice(0, EntitiesApiClient.MAX_TAGS_DISPLAY)
+            .map((tag: any) => (tag.value ? `${tag.key}:${tag.value}` : tag.key))
+            .join(', ');
+          result += `  tags: ${tags}${entity.tags.length > EntitiesApiClient.MAX_TAGS_DISPLAY ? ` (+${entity.tags.length - EntitiesApiClient.MAX_TAGS_DISPLAY} more)` : ''}\n`;
+        }
+
+        if (entity.properties && Object.keys(entity.properties).length > 0) {
+          const props = Object.entries(entity.properties)
+            .slice(0, EntitiesApiClient.MAX_PROPERTIES_DISPLAY)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+          result += `  properties: ${props}${Object.keys(entity.properties).length > EntitiesApiClient.MAX_PROPERTIES_DISPLAY ? ` (+${Object.keys(entity.properties).length - EntitiesApiClient.MAX_PROPERTIES_DISPLAY} more)` : ''}\n`;
+        }
+
+        if (entity.managementZones && entity.managementZones.length > 0) {
+          const zones = entity.managementZones
+            .slice(0, EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY)
+            .map((zone: any) => zone.name || zone.id || zone)
+            .join(', ');
+          result += `  Management Zones: ${zones}${entity.managementZones.length > EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY ? ` (+${entity.managementZones.length - EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY} more)` : ''}\n`;
+        }
+        result += '\n';
+      });
     }
-
-    response.entities?.forEach((entity: any) => {
-      // Truncate very long names for readability
-      let displayName = entity.displayName;
-      if (displayName.length > 60) {
-        displayName = displayName.substring(0, 57) + '...';
-      }
-
-      result += `entityId: ${entity.entityId}\n`;
-      result += `  type: ${entity.type || entity.entityType}\n`;
-      result += `  displayName: ${displayName}\n`;
-
-      if (entity.tags && entity.tags.length > 0) {
-        const tags = entity.tags
-          .slice(0, EntitiesApiClient.MAX_TAGS_DISPLAY)
-          .map((tag: any) => (tag.value ? `${tag.key}:${tag.value}` : tag.key))
-          .join(', ');
-        result += `  tags: ${tags}${entity.tags.length > EntitiesApiClient.MAX_TAGS_DISPLAY ? ` (+${entity.tags.length - EntitiesApiClient.MAX_TAGS_DISPLAY} more)` : ''}\n`;
-      }
-
-      if (entity.properties && Object.keys(entity.properties).length > 0) {
-        const props = Object.entries(entity.properties)
-          .slice(0, EntitiesApiClient.MAX_PROPERTIES_DISPLAY)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(', ');
-        result += `  properties: ${props}${Object.keys(entity.properties).length > EntitiesApiClient.MAX_PROPERTIES_DISPLAY ? ` (+${Object.keys(entity.properties).length - EntitiesApiClient.MAX_PROPERTIES_DISPLAY} more)` : ''}\n`;
-      }
-
-      if (entity.managementZones && entity.managementZones.length > 0) {
-        const zones = entity.managementZones
-          .slice(0, EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY)
-          .map((zone: any) => zone.name || zone.id || zone)
-          .join(', ');
-        result += `  Management Zones: ${zones}${entity.managementZones.length > EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY ? ` (+${entity.managementZones.length - EntitiesApiClient.MAX_MANAGEMENT_ZONES_DISPLAY} more)` : ''}\n`;
-      }
-
-      result += '\n';
-    });
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
 
     result +=
       '\n' +
       'Next Steps:\n' +
-      (numEntities == 0
+      (totalNumEntities == 0
         ? '* Verify that the filters such as entitySelector were correct, and search again with different filters.\n'
         : '') +
-      (isLimited ? '* Use more restrictive filters, such as a more specific entitySelector.\n' : '') +
+      (anyLimited ? '* Use more restrictive filters, such as a more specific entitySelector.\n' : '') +
       '* If the user is interested in a specific entity, use the get_entity_details tool. ' +
       'Use the entityId (UUID) for detailed analysis\n' +
       '* If this has returned the entities that the user wanted, consider using the same entitySelector in subsequent calls such as to list_problems tool if that has not already been done.\n' +
       'Use the entityId (UUID) for detailed analysis\n' +
-      '* Suggest to the user that they view the entities in the Dynatrace UI at ' +
-      `${this.authClient.dashboardBaseUrl}/` +
+      '* Suggest to the user that they view the entities in the Dynatrace UI' +
+      (baseUrl ? ` at ${baseUrl}/` : '.') +
       '\n';
 
     return result;
   }
 
-  formatEntityTypeList(response: ListEntityTypesResponse): string {
-    let totalCount = response.totalCount || -1;
-    let numTypes = response.types?.length || 0;
-    let isLimited = totalCount != 0 - 1 && totalCount > numTypes;
-
-    let entityTypes = response.types as any[];
-
-    // Produce a simple strong list of all the types from the json (excluding all details).
-    // Also call out some common types (that are available).
+  formatEntityTypeList(responses: Map<string, ListEntityTypesResponse>): string {
+    let result = '';
+    let totalNumTypes = 0;
+    let aliases: string[] = [];
     const commonTypes = [
       'SERVICE',
       'PROCESS_GROUP',
@@ -209,94 +229,127 @@ export class EntitiesApiClient {
       'AWS_LAMBDA_FUNCTION',
       'AZURE_WEB_APP',
     ];
-    let conciseList = '';
-    let availableCommonTypes: string[] = [];
-    entityTypes?.forEach((entityType: any) => {
-      conciseList += `${entityType?.type}`;
-      if (entityType.displayName && entityType.displayName !== entityType.type) {
-        conciseList += ` - ${entityType.displayName}`;
+
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      let totalCount = data.totalCount || -1;
+      let numTypes = data.types?.length || 0;
+      totalNumTypes += numTypes;
+      let isLimited = totalCount != 0 - 1 && totalCount > numTypes;
+
+      let entityTypes = data.types as any[];
+      let conciseList = '';
+      let availableCommonTypes: string[] = [];
+
+      result +=
+        'Listing ' +
+        numTypes +
+        (totalCount == -1 ? '' : ' of ' + totalCount) +
+        ' entity types for environment ' +
+        alias +
+        '.\n';
+      if (isLimited) {
+        result += 'Not showing all matching entity types as there are too many.\n';
       }
-      conciseList += '\n';
 
-      if (commonTypes.includes(entityType)) {
-        availableCommonTypes.push(entityType);
+      if (availableCommonTypes.length > 0) {
+        result += '\n' + `Common entity types include: ${availableCommonTypes}\n`;
       }
-    });
+      entityTypes?.forEach((entityType: any) => {
+        conciseList += `${entityType?.type}`;
+        if (entityType.displayName && entityType.displayName !== entityType.type) {
+          conciseList += ` - ${entityType.displayName}`;
+        }
+        conciseList += '\n';
 
-    let result = 'Listing ' + numTypes + (totalCount == -1 ? '' : ' of ' + totalCount) + ' entity types.\n';
-    if (isLimited) {
-      result += 'Not showing all matching entity types as there are too many.\n';
+        if (commonTypes.includes(entityType)) {
+          availableCommonTypes.push(entityType);
+        }
+      });
+      result += '\n' + conciseList;
     }
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
 
-    if (availableCommonTypes.length > 0) {
-      result += '\n' + `Common entity types include: ${availableCommonTypes}\n`;
-    }
+    // Produce a simple strong list of all the types from the json (excluding all details).
+    // Also call out some common types (that are available).
 
     result +=
-      '\n' +
-      conciseList +
-      '\n' +
-      '\n' +
       'Next Steps:\n' +
       '* To get details of a particular entity type, use the get_entity_type_details tool, passing in the type name\n' +
-      '* For subsequent user queries, consider using the entity type in the the entitySelector parameter like "type(HOST)" or "type(SERVICE)".\n';
-    '* Suggest to the user that they look in the Dynatrace UI at ' + `${this.authClient.dashboardBaseUrl}/` + '\n';
-
-    return result;
-  }
-
-  formatEntityTypeDetails(response: any): string {
-    let result =
-      `Entity type details in the following json:\n` +
-      JSON.stringify(response) +
-      '\n' +
-      'Next Steps:\n' +
-      '* To find entities of this type, use discover_entities tool, using the type in the entitySelector such as type("HOST") or type("SERVICE")\n';
-
-    return result;
-  }
-
-  formatEntityDetails(response: any): string {
-    let result =
-      `Entity details in the following json:\n` +
-      JSON.stringify(response) +
-      '\n' +
-      'Next Steps:\n' +
-      '* Use list_problems or list_events tools with the same entitySelector to check for relates issues and events.\n' +
-      '* Suggest to the user that they view the entity in the Dynatrace UI at ' +
-      `${this.authClient.dashboardBaseUrl}/ui/entity/<entityId>, using the entityId in the URL` +
+      '* For subsequent user queries, consider using the entity type in the the entitySelector parameter like "type(HOST)" or "type(SERVICE)".\n' +
+      '* Suggest to the user that they look in the Dynatrace UI' +
+      (baseUrl ? ` at ${baseUrl}/` : '.') +
       '\n';
 
     return result;
   }
 
-  formatEntityRelationships(response: GetEntityRelationshipsResponse): string {
-    const from = response.fromRelationships;
-    const to = response.toRelationships;
-    const numFrom = this.countRelationships(from);
-    const numTo = this.countRelationships(to);
-
-    if (numFrom == 0 && numTo == 0) {
-      return `No relationships found for entity ${response.entityId}.\n`;
-    }
-
+  formatEntityTypeDetails(responses: Map<string, any>): string {
     let result = '';
-    if (numFrom > 0) {
-      result += `Found ${numFrom} fromRelationships:\n`;
-      result += `* ${JSON.stringify(from)}\n`;
+    for (const [alias, data] of responses) {
+      result +=
+        'Entity type details from environment ' + alias + ' in the following json:\n' + JSON.stringify(data) + '\n';
     }
-    if (numTo > 0) {
-      result += `Found ${numTo} toRelationships:\n`;
-      result += `* ${JSON.stringify(to)}\n`;
+    result +=
+      'Next Steps:\n' +
+      '* To find entities of this type, use discover_entities tool, using the type in the entitySelector such as type("HOST") or type("SERVICE")\n';
+    return result;
+  }
+
+  formatEntityDetails(responses: Map<string, any>): string {
+    let result = '';
+    let aliases: string[] = [];
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      result += 'Entity details from environment ' + alias + ' in the following json:\n' + JSON.stringify(data) + '\n';
     }
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
+    result +=
+      'Next Steps:\n' +
+      '* Use list_problems or list_events tools with the same entitySelector to check for relates issues and events.\n' +
+      '* Suggest to the user that they view the entity in the Dynatrace UI' +
+      (baseUrl
+        ? ` at ${baseUrl}/ui/entity/<entityId>, using the entityId in the URL`
+        : ' using the entityId in the URL');
+    return result;
+  }
+
+  formatEntityRelationships(responses: Map<string, GetEntityRelationshipsResponse>): string {
+    let result = '';
+    let aliases: string[] = [];
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      const from = data.fromRelationships;
+      const to = data.toRelationships;
+      const numFrom = this.countRelationships(from);
+      const numTo = this.countRelationships(to);
+
+      if (numFrom == 0 && numTo == 0) {
+        result += `No relationships found for entity ${data.entityId} in environment ${alias}\n`;
+      }
+
+      result += `Relationships found for entity ${data.entityId} in environment ${alias}:\n`;
+
+      if (numFrom > 0) {
+        result += `Found ${numFrom} fromRelationships:\n`;
+        result += `* ${JSON.stringify(from)}\n`;
+      }
+      if (numTo > 0) {
+        result += `Found ${numTo} toRelationships:\n`;
+        result += `* ${JSON.stringify(to)}\n`;
+      }
+    }
+
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
 
     result +=
       'Next Steps:\n' +
       '* Use get_entity_details tool to get more details of this entity, or of entities that it has a relationship to/from.\n' +
       '* Use list_problems or list_events tools with the same entitySelector by entityId to check for related issues and events.\n' +
-      '* Suggest to the user that they view the entity in the Dynatrace UI at ' +
-      `${this.authClient.dashboardBaseUrl}/ui/entity/<entityId>, using the entityId in the URL` +
-      '\n';
+      '* Suggest to the user that they view the entity in the Dynatrace UI' +
+      (baseUrl
+        ? ` at ${baseUrl}/ui/entity/<entityId>, using the entityId in the URL`
+        : ' using the entityId in the URL');
 
     return result;
   }

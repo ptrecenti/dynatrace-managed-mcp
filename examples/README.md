@@ -62,6 +62,16 @@ What performance metrics are available for the books service
 Ask Dynatrace for the daily trend of the "builtin:service.response.time" metric for the dt_books_storage service over the last week
 ```
 
+### Example - Multienvironment
+
+```text
+Ask Dynatrace to list the open problems from all of my environments
+```
+
+```text
+Ask Dynatrace to list the open problems from my production environment
+```
+
 ### Example - Misc.
 
 ```text

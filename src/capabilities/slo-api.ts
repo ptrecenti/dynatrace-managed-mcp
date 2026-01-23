@@ -1,4 +1,4 @@
-import { ManagedAuthClient } from '../authentication/managed-auth-client.js';
+import { ManagedAuthClientManager } from '../authentication/managed-auth-client.js';
 
 import { logger } from '../utils/logger';
 
@@ -69,9 +69,9 @@ export class SloApiClient {
   static readonly API_PAGE_SIZE = 200;
   static readonly MAX_MANAGEMENT_ZONES_DISPLAY = 11;
 
-  constructor(private authClient: ManagedAuthClient) {}
+  constructor(private authManager: ManagedAuthClientManager) {}
 
-  async listSlos(params: SloQueryParams = {}): Promise<ListSlosResponse> {
+  async listSlos(params: SloQueryParams = {}, environment_aliases: string): Promise<Map<string, ListSlosResponse>> {
     const queryParams: Record<string, any> = {
       pageSize: params.pageSize || SloApiClient.API_PAGE_SIZE,
       ...(params.sloSelector && { sloSelector: params.sloSelector }),
@@ -85,12 +85,12 @@ export class SloApiClient {
       ...(params.sort && { sort: params.sort }),
     };
 
-    const response = await this.authClient.makeRequest('/api/v2/slo', queryParams);
-    logger.debug('listSLOs response', { data: response });
-    return response;
+    const responses = await this.authManager.makeRequests('/api/v2/slo', queryParams, environment_aliases);
+    logger.debug('listSLOs response', { data: responses });
+    return responses;
   }
 
-  async getSloDetails(params: GetSloQueryParams): Promise<any> {
+  async getSloDetails(params: GetSloQueryParams, environment_aliases: string): Promise<Map<string, any>> {
     const queryParams: Record<string, any> = {
       ...(params.from && { from: params.from }),
       ...(params.to && { to: params.to }),
@@ -100,78 +100,93 @@ export class SloApiClient {
       queryParams.timeFrame = 'GTF';
     }
 
-    const response = await this.authClient.makeRequest(`/api/v2/slo/${encodeURIComponent(params.id)}`, queryParams);
-    logger.debug('getSLODetails response', { data: response });
-    return response;
+    const responses = await this.authManager.makeRequests(
+      `/api/v2/slo/${encodeURIComponent(params.id)}`,
+      queryParams,
+      environment_aliases,
+    );
+    logger.debug('getSLODetails response', { data: responses });
+    return responses;
   }
 
-  formatList(response: ListSlosResponse): string {
-    let totalCount = response.totalCount || -1;
-    let numSLOs = response.slo?.length || 0;
-    let isLimited = totalCount != 0 - 1 && totalCount > numSLOs;
+  formatList(responses: Map<string, ListSlosResponse>): string {
+    let result = '';
+    let totalNumSlo = 0;
+    let anyLimited = false;
+    let aliases: string[] = [];
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      let totalCount = data.totalCount || -1;
+      let numSLOs = data.slo?.length || 0;
+      totalNumSlo += numSLOs;
+      let isLimited = totalCount != 0 - 1 && totalCount > numSLOs;
 
-    let result = 'Listing ' + numSLOs + (totalCount == -1 ? '' : ' of ' + totalCount) + ' SLOs.\n';
-
-    if (isLimited) {
       result +=
-        'Not showing all matching SLOs. Consider using more specific filters (sloSelector) to get complete results.\n';
+        'Listing ' +
+        numSLOs +
+        (totalCount == -1 ? '' : ' of ' + totalCount) +
+        ' SLOs from environment ' +
+        alias +
+        ':\n';
+
+      if (isLimited) {
+        result +=
+          'Not showing all matching SLOs. Consider using more specific filters (sloSelector) to get complete results.\n';
+        anyLimited = true;
+      }
+
+      data.slo?.forEach((slo: any) => {
+        result += `id: ${slo.id}\n`;
+        result += `  name: ${slo.name}\n`;
+        if (slo.description) {
+          result += `${slo.description}\n`;
+        }
+        result += `  status: ${slo.status}\n`;
+        result += `  target: ${slo.target}\n`;
+        result += `  warning: ${slo.warning}\n`;
+        result += `  enabled: ${slo.enabled}\n`;
+        if (slo.timeframe) {
+          result += `. timeframe: ${slo.timeframe}\n`;
+        }
+        if (slo.evaluatedPercentage !== undefined && slo.evaluatedPercentage !== -1) {
+          result += `. evaluatedPercentage: ${slo.evaluatedPercentage}%\n`;
+        }
+        if (slo.errorBudget !== undefined && slo.errorBudget !== -1) {
+          result += `  error budget: ${slo.errorBudget}%\n`;
+        }
+        if (slo.managementZones && slo.managementZones.length > 0) {
+          const zones = slo.managementZones
+            .slice(0, SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY)
+            .map((zone: any) => zone.name || zone.id || zone)
+            .join(', ');
+          result += `  management zones: ${zones}${slo.managementZones.length > SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY ? ` (+${slo.managementZones.length - SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY} more)` : ''}\n`;
+        }
+        result += '\n';
+      });
     }
 
-    response.slo?.forEach((slo: any) => {
-      result += `id: ${slo.id}\n`;
-      result += `  name: ${slo.name}\n`;
-      if (slo.description) {
-        result += `${slo.description}\n`;
-      }
-      result += `  status: ${slo.status}\n`;
-      result += `  target: ${slo.target}\n`;
-      result += `  warning: ${slo.warning}\n`;
-      result += `  enabled: ${slo.enabled}\n`;
-      if (slo.timeframe) {
-        result += `. timeframe: ${slo.timeframe}\n`;
-      }
-      if (slo.evaluatedPercentage !== undefined && slo.evaluatedPercentage !== -1) {
-        result += `. evaluatedPercentage: ${slo.evaluatedPercentage}%\n`;
-      }
-      if (slo.errorBudget !== undefined && slo.errorBudget !== -1) {
-        result += `  error budget: ${slo.errorBudget}%\n`;
-      }
-      if (slo.managementZones && slo.managementZones.length > 0) {
-        const zones = slo.managementZones
-          .slice(0, SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY)
-          .map((zone: any) => zone.name || zone.id || zone)
-          .join(', ');
-        result += `  management zones: ${zones}${slo.managementZones.length > SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY ? ` (+${slo.managementZones.length - SloApiClient.MAX_MANAGEMENT_ZONES_DISPLAY} more)` : ''}\n`;
-      }
-      result += '\n';
-    });
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
 
     result +=
       '\n' +
       'Next Steps:\n' +
-      (numSLOs == 0
+      (totalNumSlo == 0
         ? '* Verify that the filters such as sloSelector were correct, and search again with different filters.\n'
         : '') +
-      (isLimited ? '* Use more restrictive filters, such as a more specific sloSelector and status.\n' : '') +
-      (numSLOs > 1 ? '* Use sort (e.g. with "+name" for ascending alphabetical order).\n' : '') +
+      (anyLimited ? '* Use more restrictive filters, such as a more specific sloSelector and status.\n' : '') +
+      (totalNumSlo > 1 ? '* Use sort (e.g. with "+name" for ascending alphabetical order).\n' : '') +
       '* If the user is interested in a specific SLO, use the get_slo_details tool. Use the SLO id for this.\n' +
-      '* Suggest to the user that they view the SLOs in the Dynatrace UI at ' +
-      `${this.authClient.dashboardBaseUrl}/ui/slo` +
-      '\n';
-
+      '* Suggest to the user that they view the SLOs in the Dynatrace UI' +
+      (baseUrl ? ` at ${baseUrl}/ui/slo` : '.');
     return result;
   }
 
-  formatDetails(response: any): string {
-    let result =
-      'Details of SLO in the following json.\n' +
-      JSON.stringify(response) +
-      '\n' +
-      'Next Steps:\n' +
-      '* Suggest to the user that they view the SLO in the Dynatrace UI at ' +
-      `${this.authClient.dashboardBaseUrl}/ui/slo/<id>, using the SLO id in the URL` +
-      '\n';
-
+  formatDetails(responses: Map<string, any>): string {
+    let result = '';
+    for (const [alias, data] of responses) {
+      result += 'Details of SLO from environment ' + alias + ' in the following json:\n' + JSON.stringify(data) + '\n';
+    }
+    result += 'Next Steps:\n' + '* Suggest to the user that they explore this further in the Dynatrace UI.' + '\n';
     return result;
   }
 }

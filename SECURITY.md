@@ -17,7 +17,7 @@ If you would like to use encryption for your message, please first reach out to 
 
 ### When Should I NOT Report a Vulnerability?
 
-- You need help tuning one of our our Open Source projects for security - please discuss this with the maintainers of said project
+- You need help tuning one of our Open Source projects for security - please discuss this with the maintainers of said project
 - You need help applying security-related updates
 - Your issue is not security-related
 

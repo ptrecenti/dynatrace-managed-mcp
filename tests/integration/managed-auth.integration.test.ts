@@ -1,12 +1,12 @@
 import { ManagedAuthClient } from '../../src/authentication/managed-auth-client';
-import { getManagedEnvironmentConfig } from '../../src/utils/environment';
+import { getManagedEnvironmentConfigs, validateEnvironments } from '../../src/utils/environment';
 import { config } from 'dotenv';
 
 // Load environment variables
 config();
 
 let skip = false;
-if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !process.env.DT_MANAGED_API_TOKEN) {
+if (!process.env.DT_ENVIRONMENT_CONFIGS) {
   console.log('Skipping integration tests - environment not configured');
   skip = true;
 }
@@ -15,11 +15,16 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
   let client: ManagedAuthClient;
 
   beforeAll(() => {
-    const config = getManagedEnvironmentConfig();
+    const config = getManagedEnvironmentConfigs();
+    const environments = validateEnvironments(config);
+    const valid_client = environments['valid_configs'][0];
+
     client = new ManagedAuthClient({
-      apiBaseUrl: config.apiUrl,
-      dashboardBaseUrl: config.dashboardUrl,
-      apiToken: config.apiToken,
+      apiBaseUrl: valid_client.apiUrl,
+      dashboardBaseUrl: valid_client.dashboardUrl,
+      apiToken: valid_client.apiToken,
+      alias: valid_client.alias,
+      minimum_version: '1.328.0',
     });
   });
 
@@ -45,7 +50,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   it('should validate minimum version requirement', async () => {
     const version = await client.getClusterVersion();
-    const isValidVersion = await client.validateMinimumVersion(version);
+    const isValidVersion = client.validateMinimumVersion(version);
     expect(typeof isValidVersion).toBe('boolean');
   }, 30000);
 });

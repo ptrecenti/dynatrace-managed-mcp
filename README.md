@@ -18,7 +18,8 @@
   </a>
 </h4>
 
-The **Dynatrace Managed MCP server** enables AI Assistants to interact with self-hosted [Dynatrace Managed](https://www.dynatrace.com/) environments, bringing observability data directly into your AI-assisted workflows.
+The local _Dynatrace Managed MCP server_ allows AI Assistants to interact with one or more self-hosted [Dynatrace Managed](https://www.dynatrace.com/) deployments,
+bringing observability data directly into your AI assisted workflow.
 
 This MCP server supports **two modes**:
 
@@ -39,13 +40,69 @@ If you need help, please contact us via [GitHub Issues](https://github.com/dynat
 You can add this MCP server to your AI Assistant such as VSCode, Claude, Cursor, Kiro, Windsurf, ChatGPT, or Github Copilot.
 For more details, please refer to the [configuration section below](#configuration).
 
-You need to configure the connection to your Dynatrace Managed environment:
+You need to configure the connection to your Dynatrace Managed environment(s). There is one variable to set (`DT_ENVIRONMENT_CONFIGS`)
+which contains escaped JSON that defines all of your managed deployments. These are held in an array, with one element per environment.
 
-- `DT_MANAGED_ENVIRONMENT`: id of the managed environment, used for constructing URL for API and dashboards (e.g. of the form `01234567-89ab-cdef-abcd-ef0123456789`)
-- `DT_API_ENDPOINT_URL`: base url for Dynatrace Managed API, to which the environment id will be appended (e.g. `https://abc123.dynatrace-managed.com:9999`)
-- `DT_DYNATRACE_URL`: base url for Dynatrace Managed dashboard, to which the environment id will be appended (e.g. `https://dmz123.dynatrace-managed.com`).
+```json
+[
+  {
+    "dynatraceUrl": "https://my-dashboard-endpoint.com/",
+    "apiEndpointUrl": "https://my-api-endpoint.com/",
+    "environmentId": "my-env-id-1",
+    "alias": "alias-env",
+    "apiToken": "my-api-token",
+    "httpProxyUrl": "",
+    "httpsProxyUrl": ""
+  },
+  {
+    "dynatraceUrl": "https://my-dashboard2-endpoint.com/",
+    "apiEndpointUrl": "https://my-api2-endpoint.com/",
+    "environmentId": "my-env-id-2",
+    "alias": "alias-env-2",
+    "apiToken": "my-api-token-2",
+    "httpProxyUrl": "",
+    "httpsProxyUrl": ""
+  }
+]
+```
+
+where:
+
+- `dynatraceUrl`: base url for Dynatrace Managed dashboard, to which the environment id will be appended (e.g. `https://dmz123.dynatrace-managed.com`).
   If not specified, will default to use the same value as `DT_API_ENDPOINT_URL`.
-- `DT_MANAGED_API_TOKEN`: API token with required scopes (see [Authentication](#authentication))
+- `apiEndpointUrl`: base url for Dynatrace Managed API, to which the environment id will be appended (e.g. `https://abc123.dynatrace-managed.com:9999`)
+- `environmentId`: id of the managed environment, used for constructing URL for API and dashboards (e.g. of the form `01234567-89ab-cdef-abcd-ef0123456789`)
+- `alias`: a friendly/human-readable name for the environment
+- `apiToken`: API token with required scopes (see [Authentication](#authentication))
+- (optional) `httpProxyUrl`/`httpsProxyUrl`: URL of proxy server for requests (see [Environment Variables](#environment-variables))
+
+This needs to be escaped and set as the `DT_ENVIRONMENT_CONFIGS` environment variable, e.g.:
+
+```shell
+DT_ENVIRONMENT_CONFIGS='[
+    {
+        "dynatraceUrl": "https://my-dashboard-endpoint.com/",
+        "apiEndpointUrl": "https://my-api-endpoint.com/",
+        "environmentId": "my-env-id-1",
+        "alias": "alias-env",
+        "apiToken": "my-api-token",
+        "httpProxyUrl": "http://proxy.company.com:8080"
+    },
+    {
+        "dynatraceUrl": "https://my-dashboard2-endpoint.com/",
+        "apiEndpointUrl": "https://my-api2-endpoint.com/",
+        "environmentId": "my-env-id-2",
+        "alias": "alias-env-2",
+        "apiToken": "my-api-token-2",
+        "httpProxyUrl": "http://proxy.company.com:8080"
+    }
+]'
+```
+
+If you are using multiple environments, we strongly recommend you set up rules (see [Rules](#rule-file)) to steer your LLM to better
+understand each of your environments.
+
+Changes to environment configuration will need from an MCP server restart/reload. Changes won't be picked up until a fresh reload.
 
 Once configured, you can start using [example prompts](#Example-Prompts) like `Get all details of the Dynatrace entity 'my-service'`
 or `What problems has Dynatrace identified? Give details of the first problem.`.
@@ -68,8 +125,8 @@ Minimum supported version: Dynatrace Managed 1.328.0
 
 There are two ways that Dynatrace Managed, and thus the MCP, may be used:
 
-1. Dynatrace Managed is the primary Observability system, containing all live data; or
-2. There has been a migration from Dynatrace Managed to Dynatrace Saas, however historical observability data has not been migrated and can still be access via Dynatrace Managed.
+1. Your Dynatrace Managed environment(s) is/are the primary Observability system, containing all live data; or
+2. There has been a migration from a Dynatrace Managed environment to a Dynatrace Saas environment, however historical observability data has not been migrated and can still be access via a Dynatrace Managed environment.
    The Dynatrace Managed MCP is used to access historical data, and a separate Dynatrace SaaS MCP is used to access live and more recent data.
 
 Specific use cases for the Dynatrace Managed MCP include:
@@ -79,6 +136,7 @@ Specific use cases for the Dynatrace Managed MCP include:
 - **Security insights** - Get detailed vulnerability analysis and security problem tracking. This can include multi-cloud compliance assessment with evidence-based investigation.
 - **Natural language queries** - Queries are mapped to MCP tool usage, and thus API queries, with guidance for next step
 - **Multiphase incident investigation** - Systematic impact assessment and troubleshooting
+- **Multienvironment support** - Query multiple Dynatrace Managed environments from the same MCP server
 
 ## Capabilities
 
@@ -92,13 +150,14 @@ Specific use cases for the Dynatrace Managed MCP include:
 
 ### Performance Considerations
 
-**Important:** This MCP server is makes API calls to the Dynatrace Managed environment. It is designed for efficient usage (e.g. limiting the response sizes),
-but care should be taken to not overload the Dynatrace Managed with large queries.
+**Important:** This MCP server is makes API calls to the Dynatrace Managed environment(s). It is designed for efficient usage (e.g. limiting the response sizes),
+but care should be taken to not overload the Dynatrace Managed environment(s) with large queries.
 
 **Best Practices:**
 
 1. Use specific time ranges (e.g., 1-2 hours) rather than large historical queries.
 2. Use specific filters to limit the scope of queries as much as possible, for example entity selectors that specify the entity id.
+3. If using multiple environments, be specific on which one to query where applicable. If querying multiple at once, be mindful of how much data will be returned to the LLM, e.g. top 10 problems from 2 envs = 20 problems, versus top 10 problems from 10 envs = 100 problems.
 
 ## Configuration
 
@@ -131,10 +190,7 @@ This only works if the config is stored in the current workspaces, e.g., `<your-
       "command": "npx",
       "args": ["-y", "@dynatrace-oss/dynatrace-managed-mcp-server@latest"],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234"
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]"
       }
     }
   }
@@ -150,10 +206,7 @@ This only works if the config is stored in the current workspaces, e.g., `<your-
       "command": "npx",
       "args": ["-y", "@dynatrace-oss/dynatrace-managed-mcp-server@latest"],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234"
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]"
       }
     }
   }
@@ -171,10 +224,7 @@ This only works if the config is stored in the current workspaces, e.g., `<your-
       "command": "npx",
       "args": ["-y", "@dynatrace-oss/dynatrace-managed-mcp-server@latest"],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234"
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]"
       }
     }
   }
@@ -191,10 +241,7 @@ Using `gemini` CLI directly (recommended):
 
 ```bash
 gemini extensions install https://github.com/dynatrace-oss/dynatrace-managed-mcp
-export DT_MANAGED_ENVIRONMENT="01234567-89ab-cdef-abcd-ef0123456789"
-export DT_API_ENDPOINT_URL="https://abc123.dynatrace-managed.example.com:9999"
-export DT_DYNATRACE_URL="https://dmz123.dynatrace-managed.example.com"
-export DT_MANAGED_API_TOKEN="dt0s16.SAMPLE.abcd1234"
+export DT_ENVIRONMENT_CONFIGS="[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]"
 ```
 
 and verify that the server is running via
@@ -212,10 +259,7 @@ Or manually in your `~/.gemini/settings.json` or `.gemini/settings.json`:
       "command": "npx",
       "args": ["@dynatrace-oss/dynatrace-managed-mcp-server@latest"],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234"
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]"
       },
       "timeout": 30000,
       "trust": false
@@ -316,27 +360,54 @@ AWS Lambda Functions:
 
 ## Environment Variables
 
-- `DT_MANAGED_ENVIRONMENT` (required): id of the managed environment, used for constructing URL for API and dashboards (e.g. of the form `01234567-89ab-cdef-abcd-ef0123456789`)
-- `DT_API_ENDPOINT_URL` (required): base url for Dynatrace Managed API, to which the environment id will be appended (e.g. `https://abc123.dynatrace-managed.com:9999`)
-- `DT_DYNATRACE_URL` (optional): base url for Dynatrace Managed dashboard, to which the environment id will be appended (e.g. `https://dmz123.dynatrace-managed.com`).
-  If not specified, will default to use the same value as `DT_API_ENDPOINT_URL`.
-- `DT_MANAGED_API_TOKEN` (required): API token with required scopes (see [Authentication](#authentication))
+- `DT_ENVIRONMENT_CONFIGS`: An escaped JSON array that defines the Dynatrace Managed environment(s) to connect to. See below for contents of this.
 - `LOG_LEVEL` (optional): Log level, writing to dynatrace-managed-mcp.log in the current working directory (e.g. debug, info, warning, error)
-- `HTTP_PROXY` (optional): HTTP Proxy for corporate environments, to route traffic through (e.g. http://proxy.company.com:8080)
-- `HTTPS_PROXY` (optional): HTTPS Proxy for corporate environments, to route traffic through (e.g. https://proxy.company.com:8080)
+
+### Multienvironment Config Fields
+
+Inside the `DT_ENVIRONMENT_CONFIGS` variable, the elements of the array must contain all of these fields for each environment:
+
+- `dynatraceUrl`: base url for Dynatrace Managed dashboard, to which the environment id will be appended (e.g. `https://dmz123.dynatrace-managed.com`).
+  If not specified, will default to use the same value as `DT_API_ENDPOINT_URL`.
+- `apiEndpointUrl` (required): base url for Dynatrace Managed API, to which the environment id will be appended (e.g. `https://abc123.dynatrace-managed.com:9999`)
+- `environmentId` (required): id of the managed environment, used for constructing URL for API and dashboards (e.g. of the form `01234567-89ab-cdef-abcd-ef0123456789`)
+- `alias`: a friendly/human-readable name for the environment, useful when distinguishing between environments with the LLM
+- `apiToken` (required): API token with required scopes (see [Authentication](#authentication))
+- `httpProxyUrl` (optional): HTTP Proxy for corporate environments, to route traffic through (e.g. http://proxy.company.com:8080)
+- `httpsProxyUrl` (optional): HTTPS Proxy for corporate environments, to route traffic through (e.g. https://proxy.company.com:8080)
 
 **Proxy Configuration**
 
-The MCP server honors system proxy settings for corporate environments:
+The MCP server honors system proxy settings for corporate environments for each Dynatrace Managed environment you configure:
 
-- `HTTPS_PROXY` (optional, string, e.g., `http://proxy.company.com:8080`) - Proxy server URL for HTTPS requests; or
-- `HTTP_PROXY` (optional, string, e.g., `http://proxy.company.com:8080`) - Proxy server URL for HTTP requests
+- `httpProxyUrl` (optional, string, e.g., `http://proxy.company.com:8080`) - Proxy server URL for HTTPS requests; or
+- `httpsProxyUrl` (optional, string, e.g., `http://proxy.company.com:8080`) - Proxy server URL for HTTP requests
 
 Example configuration with proxy:
 
 ```bash
-export HTTP_PROXY=http://proxy.company.com:8080
+export DT_ENVIRONMENT_CONFIGS='[
+    {
+        "dynatraceUrl": "https://my-dashboard-endpoint.com/",
+        "apiEndpointUrl": "https://my-api-endpoint.com/",
+        "environmentId": "my-env-id-1",
+        "alias": "alias-env",
+        "apiToken": "my-api-token",
+        "httpProxyUrl": "http://proxy.company.com:8080"
+    },
+    {
+        "dynatraceUrl": "https://my-dashboard2-endpoint.com/",
+        "apiEndpointUrl": "https://my-api2-endpoint.com/",
+        "environmentId": "my-env-id-2",
+        "alias": "alias-env-2",
+        "apiToken": "my-api-token-2",
+        "httpProxyUrl": "http://proxy.company.com:8080"
+    }
+]'
 ```
+
+Note that the `httpProxyUrl`/`httpsProxyUrl` variables exist on a per-environment basis, so you can configure one environment to use a proxy
+whilst others may not need it.
 
 ## Authentication
 
@@ -400,29 +471,56 @@ your commands are **very** specific, e.g. `Ask Dynatrace to list application pro
 
 AI Assistants usually support rules files to give steering guidance for their use (see [Rule File](#rule-file) for configuration information).
 
-If you are using this MCP server in a hybrid setup alongside the SaaS MCP server, it is recommended to add this to your configuration to prevent the AI Assistant from using the wrong MCP or getting confused.
+If you are using this MCP server in a hybrid setup alongside the SaaS MCP server and/or you have multiple managed environments, it is
+recommended to add this to your configuration to prevent the AI Assistant from using the wrong MCP or getting confused.
 
 Your steering rules will be unique to your setup, but some recommended templates are included below for you to use as a starter.
 You can edit these as you see fit and include additional context that is specific to your environments.
+
+#### Multiple Managed Environments
+
+In this example, you have multiple Dynatrace Managed environments set up. This might be
+a development/test/production setup, or different applications entirely. It is recommended to refer to your environments by the
+same alias you used in the `DT_ENVIRONMENT_CONFIGS` `alias` field to prevent confusion.
+
+```text
+# Dynatrace
+
+- I have three separate Dynatrace environments:
+   1. "production" is a self-hosted Dynatrace Managed environment. It contains data about my production environment, and
+      its issues and problems should outrank any other environment as this is customer facing.
+      It is accessed via the Dynatrace Managed MCP, named
+      dynatrace-managed-mcp-server.
+   2. "test" is a self-hosted Dynatrace Managed environment. It contains data about my test environment, which is used to
+      prepare code before going to Production.
+      It is accessed via the Dynatrace Managed MCP, named dynatrace-managed-mcp-server.
+   3. "development" is a self-hosted Dynatrace Managed environment. It contains data about my development environment,
+      which is my lowest priority environment.
+      It is accessed via the Dynatrace Managed MCP, named dynatrace-managed-mcp-server
+- Be careful of which environment to use.
+  If it is unclear, ask which environment to use.
+- Must make it very clear to the user which environment data has come from.
+
+```
 
 #### Hybrid setup with migration date
 
 In this example, you have migrated from Managed to SaaS, but still have historic data in your self-hosted Managed environment.
 You want your AI Assistant to have context on what data lives where. This will enable it to know which environments to target
 for the date range you ask for, e.g. `Show me all Dynatrace problems from the last 7 days` may require data from both environments
-(and thus use both MCP servers), or may all reside in just the SaaS environment.
+(and thus use both MCP servers), or may all reside in just the Dynatrace SaaS.
 
 ```text
 # Dynatrace
 
-- I have two separate Dynatrace environments:
+- I have two separate Dynatraces:
    1. Dynatrace Managed is self-hosted. It contains only historical data from before 29th November 2025.
       It is accessed via the Dynatrace Managed MCP, named dynatrace-managed-mcp-server
    2. Dynatrace SaaS is used for all live data.
       It is accessed through the Dynatrace SaaS MCP, named dynatrace-saas-mcp-server
 - Be careful of which MCP to use.
   If it is unclear, ask which MCP to use.
-- Must make it very clear to the user whether data has come from the Dynatrace Managed or Dynatrace SaaS environments.
+- Must make it very clear to the user whether data has come from the Dynatrace Managed or Dynatrace SaaS.
 ```
 
 #### Hybrid setup running in tandem
@@ -433,7 +531,7 @@ MCP client to have context on where it can find data on each one.
 ```text
 # Dynatrace
 
-- I have two separate Dynatrace environments which both contain live data:
+- I have two separate Dynatraces which both contain live data:
    1. Dynatrace Managed is self-hosted. It only contains observability data for only some of my systems,
       primarily the book store systems.
       It is accessed via the Dynatrace Managed MCP, named dynatrace-managed-mcp-server
@@ -441,7 +539,7 @@ MCP client to have context on where it can find data on each one.
       It is accessed through the Dynatrace SaaS MCP, named dynatrace-saas-mcp-server
 - Be careful of which MCP to use.
   If it is unclear, ask which MCP to use.
-- Must make it very clear to the user whether data has come from the Dynatrace Managed or Dynatrace SaaS environments.
+- Must make it very clear to the user whether data has come from the Dynatrace Managed or Dynatrace SaaS.
 ```
 
 ## Example prompts
@@ -484,7 +582,7 @@ The Dynatrace MCP Server includes sending Telemetry Data via Dynatrace OpenKit t
 - `DT_MCP_TELEMETRY_ENDPOINT_URL` (string, default: Dynatrace endpoint) - OpenKit endpoint URL
 - `DT_MCP_TELEMETRY_DEVICE_ID` (string, default: auto-generated) - Device identifier for tracking
 
-To disable usage tracking, add this to your environment:
+To disable usage tracking, add this to your configuration:
 
 ```bash
 DT_MCP_DISABLE_TELEMETRY=true

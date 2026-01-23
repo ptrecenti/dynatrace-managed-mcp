@@ -17,6 +17,7 @@ module.exports = {
       testEnvironment: 'node',
       testMatch: ['<rootDir>/integration-tests/**/*.integration.test.ts', '<rootDir>/tests/**/*.integration.test.ts'],
       testTimeout: 30000,
+      setupFiles: ['dotenv/config'],
     },
   ],
 };

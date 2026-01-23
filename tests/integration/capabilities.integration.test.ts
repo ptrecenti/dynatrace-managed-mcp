@@ -9,9 +9,13 @@
  *
  * An exception to this is SLOs: it is common enough to not have any SLOs defined in an environment.
  * Therefore those tests do conditional assertions, based on finding at leaset one SLO.
+ *
+ * These tests are adapted to perform operations in a single environment every time. Two environments
+ * need populated, one with valid credential and one with invalid credentials (apiToken),
+ * with aliases "testAlias" and "invalidApiToken" respectively.
  */
-import { ManagedAuthClient } from '../../src/authentication/managed-auth-client';
-import { getManagedEnvironmentConfig } from '../../src/utils/environment';
+import { ManagedAuthClientManager } from '../../src/authentication/managed-auth-client';
+import { getManagedEnvironmentConfigs, validateEnvironments } from '../../src/utils/environment';
 import { MetricsApiClient } from '../../src/capabilities/metrics-api';
 import { LogsApiClient } from '../../src/capabilities/logs-api';
 import { EventsApiClient } from '../../src/capabilities/events-api';
@@ -26,13 +30,12 @@ import { logger } from '../../src/utils/logger';
 config();
 
 let skip = false;
-if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !process.env.DT_MANAGED_API_TOKEN) {
+if (!process.env.DT_ENVIRONMENT_CONFIGS) {
   console.log('Skipping integration tests - environment not configured');
   skip = true;
 }
 
 (skip ? describe.skip : describe)('Capabilities Integration Tests', () => {
-  let authClient: ManagedAuthClient;
   let metricsClient: MetricsApiClient;
   let logsClient: LogsApiClient;
   let eventsClient: EventsApiClient;
@@ -40,27 +43,33 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
   let problemsClient: ProblemsApiClient;
   let securityClient: SecurityApiClient;
   let sloClient: SloApiClient;
+  let authManager: ManagedAuthClientManager;
 
   beforeAll(() => {
-    const config = getManagedEnvironmentConfig();
+    const config = getManagedEnvironmentConfigs();
+    const validEnvironments = validateEnvironments(config);
 
-    authClient = new ManagedAuthClient({
-      apiBaseUrl: config.apiUrl,
-      dashboardBaseUrl: config.dashboardUrl,
-      apiToken: config.apiToken,
-    });
-    metricsClient = new MetricsApiClient(authClient);
-    logsClient = new LogsApiClient(authClient);
-    eventsClient = new EventsApiClient(authClient);
-    entitiesClient = new EntitiesApiClient(authClient);
-    problemsClient = new ProblemsApiClient(authClient);
-    securityClient = new SecurityApiClient(authClient);
-    sloClient = new SloApiClient(authClient);
+    authManager = new ManagedAuthClientManager(validEnvironments['valid_configs']);
+
+    // Forcing clients to be valid, so we don't have to call isConfigured() before each.
+    for (const authClient of authManager.rawClients) {
+      authClient.isValid = true;
+    }
+
+    authManager.clients = authManager.rawClients;
+
+    metricsClient = new MetricsApiClient(authManager);
+    logsClient = new LogsApiClient(authManager);
+    eventsClient = new EventsApiClient(authManager);
+    entitiesClient = new EntitiesApiClient(authManager);
+    problemsClient = new ProblemsApiClient(authManager);
+    securityClient = new SecurityApiClient(authManager);
+    sloClient = new SloApiClient(authManager);
   });
 
   describe('MetricsApiClient', () => {
     it('should search metrics', async () => {
-      const response = await metricsClient.listAvailableMetrics({ text: 'latency', pageSize: 5 });
+      const response = await metricsClient.listAvailableMetrics({ text: 'latency', pageSize: 5 }, 'testAlias');
       const result = metricsClient.formatMetricList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -69,7 +78,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get available metrics', async () => {
-      const response = await metricsClient.listAvailableMetrics({ pageSize: 5 });
+      const response = await metricsClient.listAvailableMetrics({ pageSize: 5 }, 'testAlias');
       const result = metricsClient.formatMetricList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -77,11 +86,14 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should query metrics data', async () => {
-      const response = await metricsClient.queryMetrics({
-        metricSelector: 'builtin:host.cpu.usage',
-        from: 'now-1h',
-        to: 'now',
-      });
+      const response = await metricsClient.queryMetrics(
+        {
+          metricSelector: 'builtin:host.cpu.usage',
+          from: 'now-1h',
+          to: 'now',
+        },
+        'testAlias',
+      );
       const result = metricsClient.formatMetricData(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -90,7 +102,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get metric details', async () => {
-      const response = await metricsClient.getMetricDetails('builtin:host.cpu.usage');
+      const response = await metricsClient.getMetricDetails('builtin:host.cpu.usage', 'testAlias');
       const result = metricsClient.formatMetricDetails(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -100,11 +112,12 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
     it('should respect pageSize', async () => {
       // Assumes there are at least 3 metrics (2 in the first page; and more in subsequent pages)
-      const response = await metricsClient.listAvailableMetrics({ pageSize: 2 });
-      let totalCount = response.totalCount || -1;
-      let numMetrics = response.metrics?.length || 0;
-      let nextPageKey = response.nextPageKey;
-      let firstMetricId = response.metrics && numMetrics > 0 ? response.metrics[0].metricId : undefined;
+      const responses = await metricsClient.listAvailableMetrics({ pageSize: 2 }, 'testAlias');
+      const response = responses.get('testAlias');
+      let totalCount = response?.totalCount || -1;
+      let numMetrics = response?.metrics?.length || 0;
+      let nextPageKey = response?.nextPageKey;
+      let firstMetricId = response?.metrics && numMetrics > 0 ? response?.metrics[0].metricId : undefined;
 
       expect(numMetrics).toEqual(2);
       expect(totalCount > numMetrics);
@@ -113,10 +126,13 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should support field selection in metrics listing', async () => {
-      const response = await metricsClient.listAvailableMetrics({
-        fields: 'metricId,displayName',
-        pageSize: 5,
-      });
+      const response = await metricsClient.listAvailableMetrics(
+        {
+          fields: 'metricId,displayName',
+          pageSize: 5,
+        },
+        'testAlias',
+      );
       const result = metricsClient.formatMetricList(response);
 
       expect(result).toContain('metricId:');
@@ -124,28 +140,37 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should support metadata selector filtering', async () => {
-      const result = await metricsClient.listAvailableMetrics({
-        metadataSelector: 'unit("Percent")',
-        pageSize: 5,
-      });
+      const results = await metricsClient.listAvailableMetrics(
+        {
+          metadataSelector: 'unit("Percent")',
+          pageSize: 5,
+        },
+        'testAlias',
+      );
+      const result = results.get('testAlias');
 
-      expect(result.metrics?.length).toBeGreaterThan(0);
-      result.metrics?.forEach((metric: any) => {
+      expect(result?.metrics?.length).toBeGreaterThan(0);
+      result?.metrics?.forEach((metric: any) => {
         expect(metric.unit).toEqual('Percent');
       });
     }, 30000);
 
     it('should handle metric query with entity selector', async () => {
-      const response = await metricsClient.queryMetrics({
-        metricSelector: 'builtin:host.cpu.usage',
-        from: 'now-24h',
-        to: 'now',
-        resolution: '1h',
-        entitySelector: 'type("HOST")',
-      });
+      const responses = await metricsClient.queryMetrics(
+        {
+          metricSelector: 'builtin:host.cpu.usage',
+          from: 'now-24h',
+          to: 'now',
+          resolution: '1h',
+          entitySelector: 'type("HOST")',
+        },
+        'testAlias',
+      );
 
-      expect(response.result?.length).toBeGreaterThan(0);
-      response.result?.forEach((result: any) => {
+      const response = responses.get('testAlias');
+
+      expect(response?.result?.length).toBeGreaterThan(0);
+      response?.result?.forEach((result: any) => {
         expect(result.metricId).toEqual('builtin:host.cpu.usage');
 
         // Could also assert that entities are of type host, but too brittle.
@@ -156,15 +181,19 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   describe('LogsApiClient', () => {
     it('should query logs', async () => {
-      const response = await logsClient.queryLogs({
-        query: 'error',
-        from: 'now-24h',
-        to: 'now',
-        limit: 5,
-      });
-      const result = logsClient.formatList(response);
+      const responses = await logsClient.queryLogs(
+        {
+          query: 'error',
+          from: 'now-24h',
+          to: 'now',
+          limit: 5,
+        },
+        'testAlias',
+      );
+      const result = logsClient.formatList(responses);
+      const response = responses.get('testAlias');
 
-      expect(response).toBeDefined();
+      expect(responses).toBeDefined();
       expect(typeof result).toBe('string');
       expect(response?.results?.length).toBeGreaterThan(0);
       expect(result).toMatch(/\[(ERROR|WARNING|INFO)\]/);
@@ -173,11 +202,14 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   describe('EventsApiClient', () => {
     it('should query events', async () => {
-      const response = await eventsClient.queryEvents({
-        from: 'now-24h',
-        to: 'now',
-        pageSize: 10,
-      });
+      const response = await eventsClient.queryEvents(
+        {
+          from: 'now-24h',
+          to: 'now',
+          pageSize: 10,
+        },
+        'testAlias',
+      );
       const result = eventsClient.formatList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -188,13 +220,15 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get event details', async () => {
-      const events = await eventsClient.queryEvents({ from: 'now-24h', to: 'now', pageSize: 1 });
-      const eventId = events.events ? events.events[0].eventId : undefined;
+      const responses = await eventsClient.queryEvents({ from: 'now-24h', to: 'now', pageSize: 1 }, 'testAlias');
+      const events = responses.get('testAlias');
+
+      const eventId = events?.events ? events?.events[0].eventId : undefined;
       if (eventId == undefined) {
         fail('Cannot find eventId from queryEvents; cannot test getEventDetails; aborting');
       }
 
-      const response = await eventsClient.getEventDetails(eventId);
+      const response = await eventsClient.getEventDetails(eventId, 'testAlias');
       const result = eventsClient.formatDetails(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -205,7 +239,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   describe('EntitiesApiClient', () => {
     it('should list entity types', async () => {
-      const response = await entitiesClient.listEntityTypes();
+      const response = await entitiesClient.listEntityTypes('testAlias');
       const result = entitiesClient.formatEntityTypeList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -215,7 +249,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get entity type details', async () => {
-      const response = await entitiesClient.getEntityTypeDetails('SERVICE');
+      const response = await entitiesClient.getEntityTypeDetails('SERVICE', 'testAlias');
       const result = entitiesClient.formatEntityTypeDetails(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -226,42 +260,53 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should list entities by type', async () => {
-      const response = await entitiesClient.queryEntities({ entitySelector: 'type(HOST)', pageSize: 10 });
-      const result = entitiesClient.formatEntityList(response);
-      expect(response).toBeDefined();
-      expect(typeof result).toBe('string');
+      const responses = await entitiesClient.queryEntities({ entitySelector: 'type(HOST)', pageSize: 10 }, 'testAlias');
+      expect(responses).toBeDefined();
 
-      expect(response.totalCount).toBeDefined();
+      const result = entitiesClient.formatEntityList(responses);
       expect(result).toContain('entityId:');
       expect(result).toContain('displayName:');
+      expect(typeof result).toBe('string');
+
+      const response = responses.get('testAlias');
+      expect(response?.totalCount).toBeDefined();
     }, 30000);
 
     it('should list entities, respecting all parameters', async () => {
       // Should not throw error even if no management zone named "Production" exists
-      const response = await entitiesClient.queryEntities({
-        entitySelector: 'type(SERVICE)',
-        pageSize: 5,
-        mzSelector: 'mzName("Production")',
-        from: 'now-1h',
-        to: 'now',
-        sort: '+name',
-      });
+      const response = await entitiesClient.queryEntities(
+        {
+          entitySelector: 'type(SERVICE)',
+          pageSize: 5,
+          mzSelector: 'mzName("Production")',
+          from: 'now-1h',
+          to: 'now',
+          sort: '+name',
+        },
+        'testAlias',
+      );
       const result = entitiesClient.formatEntityList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
     });
 
     it('should get entity details', async () => {
-      const entities = await entitiesClient.queryEntities({
-        entitySelector: 'type(SERVICE)',
-        pageSize: 1,
-      });
-      const entityId = entities.entities ? entities.entities[0].entityId : undefined;
+      const responses = await entitiesClient.queryEntities(
+        {
+          entitySelector: 'type(SERVICE)',
+          pageSize: 1,
+        },
+        'testAlias',
+      );
+
+      const entities = responses.get('testAlias');
+
+      const entityId = entities?.entities ? entities?.entities[0].entityId : undefined;
       if (entityId == undefined) {
         fail('Cannot find entityId from queryEntities; cannot test getEntityDetails; aborting');
       }
 
-      const response = await entitiesClient.getEntityDetails(entityId);
+      const response = await entitiesClient.getEntityDetails(entityId, 'testAlias');
       const result = entitiesClient.formatEntityDetails(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -272,46 +317,54 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   describe('ProblemsApiClient', () => {
     it('should list problems', async () => {
-      const response = await problemsClient.listProblems({
-        from: 'now-24h',
-        to: 'now',
-        pageSize: 10,
-      });
-      const result = problemsClient.formatList(response);
-      expect(response).toBeDefined();
+      const responses = await problemsClient.listProblems(
+        {
+          from: 'now-24h',
+          to: 'now',
+          pageSize: 10,
+        },
+        'testAlias',
+      );
+      const result = problemsClient.formatList(responses);
       expect(typeof result).toBe('string');
-
-      expect(response.totalCount).toBeDefined();
-      expect(result).toContain('problemId:');
-      expect(result).toContain('displayId:');
       expect(result).toContain('title:');
+      expect(result).toContain('problemId:');
       expect(result).toContain('status:');
+      expect(result).toContain('displayId:');
+
+      const response = responses.get('testAlias');
+
+      expect(response?.totalCount).toBeDefined();
+      expect(response).toBeDefined();
     }, 30000);
 
     it('should get problem details', async () => {
-      const problems = await problemsClient.listProblems({ pageSize: 1 });
-      const problemId = problems.problems ? problems.problems[0].problemId : undefined;
+      const responses = await problemsClient.listProblems({ pageSize: 1 }, 'testAlias');
+      const problems = responses.get('testAlias');
+
+      const problemId = problems?.problems ? problems?.problems[0].problemId : undefined;
       if (problemId == undefined) {
         fail('Cannot find problemId from listProblems; cannot test getProblemDetails; aborting');
       }
 
-      const response = await problemsClient.getProblemDetails(problemId);
+      const response = await problemsClient.getProblemDetails(problemId, 'testAlias');
       const result = problemsClient.formatDetails(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
-
       expect(result).toContain(`\"problemId\":\"${problemId}\"`);
     }, 30000);
   });
 
   describe('SecurityApiClient', () => {
     it('should list security problems', async () => {
-      const response = await securityClient.listSecurityProblems();
-      const result = securityClient.formatList(response);
-      expect(response).toBeDefined();
+      const responses = await securityClient.listSecurityProblems(undefined, 'testAlias');
+      const result = securityClient.formatList(responses);
+      expect(responses).toBeDefined();
       expect(typeof result).toBe('string');
 
-      expect(response.totalCount).toBeDefined();
+      const response = responses.get('testAlias');
+
+      expect(response?.totalCount).toBeDefined();
       expect(result).toContain('securityProblemId:');
       expect(result).toContain('displayId:');
       expect(result).toContain('status:');
@@ -320,7 +373,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
   describe('SloApiClient', () => {
     it('should list SLOs', async () => {
-      const response = await sloClient.listSlos();
+      const response = await sloClient.listSlos(undefined, 'testAlias');
       const result = sloClient.formatList(response);
       expect(response).toBeDefined();
       expect(typeof result).toBe('string');
@@ -336,17 +389,18 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get SLO details', async () => {
-      const slos = await sloClient.listSlos();
-      const sloId = slos.slo && slos.slo.length > 0 ? slos.slo[0].id : undefined;
+      const list_responses = await sloClient.listSlos(undefined, 'testAlias');
+      const slos = list_responses.get('testAlias');
+      const sloId = slos?.slo && slos?.slo.length > 0 ? slos?.slo[0].id : undefined;
       if (sloId == undefined) {
         console.warn('Cannot integration test getSLODetails because environment returned no SLOs; aborting');
         logger.warn('Cannot integration test getSLODetails because environment returned no SLOs; aborting');
         return;
       }
 
-      const response = await sloClient.getSloDetails({ id: sloId });
-      const result = sloClient.formatDetails(response);
-      expect(response).toBeDefined();
+      const responses = await sloClient.getSloDetails({ id: sloId }, 'testAlias');
+      const result = sloClient.formatDetails(responses);
+      expect(responses).toBeDefined();
       expect(typeof result).toBe('string');
 
       expect(result).toContain('"id":');
@@ -356,8 +410,10 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
     }, 30000);
 
     it('should get SLO details with timeframe', async () => {
-      const slos = await sloClient.listSlos();
-      const sloId = slos.slo && slos.slo.length > 0 ? slos.slo[0].id : undefined;
+      const list_responses = await sloClient.listSlos(undefined, 'testAlias');
+      const slos = list_responses.get('testAlias');
+
+      const sloId = slos?.slo && slos?.slo.length > 0 ? slos?.slo[0].id : undefined;
       if (sloId == undefined) {
         console.warn('Cannot integration test getSLODetails because environment returned no SLOs; aborting');
         logger.warn('Cannot integration test getSLODetails because environment returned no SLOs; aborting');
@@ -367,7 +423,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
       const to = Date.now();
       const from = to - 1000 * 60 * 60 * 24 * 7 * 11; // 11 weeks ago
 
-      const response = await sloClient.getSloDetails({ id: sloId, from: String(from), to: String(to) });
+      const response = await sloClient.getSloDetails({ id: sloId, from: String(from), to: String(to) }, 'testAlias');
       const result = sloClient.formatDetails(response);
 
       expect(response).toBeDefined();
@@ -384,11 +440,14 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
   describe('Error Handling', () => {
     it('should handle metrics 404 Bad Request errors correctly', async () => {
       try {
-        await metricsClient.queryMetrics({
-          metricSelector: 'invalid-metric-selector',
-          from: 'now-1h',
-          to: 'now',
-        });
+        await metricsClient.queryMetrics(
+          {
+            metricSelector: 'invalid-metric-selector',
+            from: 'now-1h',
+            to: 'now',
+          },
+          'testAlias',
+        );
 
         fail('Should have thrown an error for invalid parameters');
       } catch (error: any) {
@@ -398,7 +457,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
     it('should handle entities 400 Bad Request errors correctly', async () => {
       try {
-        await entitiesClient.queryEntities({ entitySelector: 'invalid-entity-selector' });
+        await entitiesClient.queryEntities({ entitySelector: 'invalid-entity-selector' }, 'testAlias');
 
         fail('Should have thrown an error for invalid parameters');
       } catch (error: any) {
@@ -408,7 +467,7 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
     it('should handle invalid problems id errors correctly', async () => {
       try {
-        await problemsClient.getProblemDetails('invalid-problem-id');
+        await problemsClient.getProblemDetails('invalid-problem-id', 'testAlias');
         fail('Should have thrown an error for invalid parameters');
       } catch (error: any) {
         expect(error.message).toContain('Request failed with status code 400');
@@ -417,15 +476,8 @@ if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !
 
     it('should handle 401 Unauthorized errors correctly', async () => {
       // Create client with invalid token
-      const invalidAuthClient = new ManagedAuthClient({
-        apiBaseUrl: authClient.apiBaseUrl,
-        dashboardBaseUrl: authClient.dashboardBaseUrl,
-        apiToken: 'my-invalid-token',
-      });
-      const invalidMetricsClient = new MetricsApiClient(invalidAuthClient);
-
       try {
-        await invalidMetricsClient.listAvailableMetrics({});
+        await metricsClient.listAvailableMetrics({}, 'invalidApiToken');
         fail('Should have thrown an error for invalid token');
       } catch (error: any) {
         expect(error.message).toContain('Request failed with status code 401');

@@ -1,4 +1,4 @@
-import { getAxiosProxyFromEnv } from '../managed-auth-client';
+import { setAxiosProxy } from '../managed-auth-client';
 
 // Mock undici
 describe('proxy-config', () => {
@@ -21,7 +21,7 @@ describe('proxy-config', () => {
   describe('configureProxyFromEnvironment', () => {
     it('should parse HTTP_PROXY', () => {
       process.env.HTTP_PROXY = 'http://myhost.com:1234';
-      const response = getAxiosProxyFromEnv();
+      const response = setAxiosProxy(process.env.HTTP_PROXY);
 
       expect(response).toEqual({
         host: 'myhost.com',
@@ -33,7 +33,7 @@ describe('proxy-config', () => {
 
     it('should parse HTTPS_PROXY', () => {
       process.env.HTTPS_PROXY = 'https://myhost.com:1234';
-      const response = getAxiosProxyFromEnv();
+      const response = setAxiosProxy(process.env.HTTPS_PROXY);
 
       expect(response).toEqual({
         host: 'myhost.com',
@@ -45,7 +45,7 @@ describe('proxy-config', () => {
 
     it('should parse auth', () => {
       process.env.HTTP_PROXY = 'http://myuser:mypass@myhost.com:1234';
-      const response = getAxiosProxyFromEnv();
+      const response = setAxiosProxy(process.env.HTTP_PROXY);
 
       expect(response).toEqual({
         host: 'myhost.com',
@@ -56,25 +56,22 @@ describe('proxy-config', () => {
     });
 
     it('should return undefined if no proxy', () => {
-      const response = getAxiosProxyFromEnv();
+      const response = setAxiosProxy();
       expect(response).toBeUndefined();
     });
 
-    it('should fail if set HTTP_PROXY and HTTPS_PROXY', () => {
+    it('should return undefined if set HTTP_PROXY and HTTPS_PROXY', () => {
       process.env.HTTP_PROXY = 'http://myuser:mypass@myhost.com:1234';
       process.env.HTTPS_PROXY = 'https://myuser:mypass@myhost.com:4321';
-      try {
-        const response = getAxiosProxyFromEnv();
-        fail(`Should have failed, but returned response=${response}`);
-      } catch (err: any) {
-        expect(err.message).toContain('Cannot specify both HTTPS_PROXY and HTTP_PROXY, use only one');
-      }
+
+      const response = setAxiosProxy();
+      expect(response).toBeUndefined();
     });
 
     it('should fail if invalid URL', () => {
       process.env.HTTP_PROXY = 'this is not a url';
       try {
-        const response = getAxiosProxyFromEnv();
+        const response = setAxiosProxy(process.env.HTTP_PROXY);
         fail(`Should have failed, but returned response=${response}`);
       } catch (err: any) {
         expect(err.message).toContain('Failed to parse and configure http(s) proxy');

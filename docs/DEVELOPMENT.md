@@ -28,11 +28,11 @@ API responses, and the response text returned by the MCP tool. Also check the lo
 
 ### Integration Tests
 
-Integration tests run against a real Dynatrace Managed environment, making real API calls.
+Integration tests run against a real Dynatrace Managed environment with alias set to `testAlias`, making real API calls.
 It is assumed that this environment has sufficient data to be able to sensibly test the API
-calls and processing of responses.
+calls and processing of responses. A second environment with alias `invalidApiToken` needs to be set up, with working credentials but a wrong apiToken, used to check error responses.
 
-Configure the `.env` file with the URL and [an API token with the required scopes](../README.md#api-scopes-for-managed-deployment). See `.env.template` as a starting point.
+Configure both environments in the `.env` file with the URL and [an API token with the required scopes](../README.md#api-scopes-for-managed-deployment). See `.env.template` as a starting point.
 See [main README](../README.md#environment-variables) for description of Environment Variables.
 
 Some useful example testing commands:
@@ -90,10 +90,7 @@ Configure your preferred AI Assistant with an mcp.json file like that below:
       "command": "npx",
       "args": ["--watch", "/path/to/repos/dynatrace-oss/dynatrace-manage-mcp/dist/index.js"],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234",
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]",
         "DT_MCP_DISABLE_TELEMETRY": "true",
         "LOG_LEVEL": "debug"
       }
@@ -143,13 +140,7 @@ You can then use that locally, for example with the following in your `mcp.json`
         "--rm",
         "-i",
         "-e",
-        "DT_MANAGED_ENVIRONMENT",
-        "-e",
-        "DT_API_ENDPOINT_URL",
-        "-e",
-        "DT_DYNATRACE_URL",
-        "-e",
-        "DT_MANAGED_API_TOKEN",
+        "DT_ENVIRONMENT_CONFIGS",
         "-e",
         "DT_MCP_DISABLE_TELEMETRY",
         "-e",
@@ -157,10 +148,7 @@ You can then use that locally, for example with the following in your `mcp.json`
         "mcp/dynatrace-managed-mcp-server:snapshot"
       ],
       "env": {
-        "DT_MANAGED_ENVIRONMENT": "01234567-89ab-cdef-abcd-ef0123456789",
-        "DT_API_ENDPOINT_URL": "https://abc123.dynatrace-managed.example.com:9999",
-        "DT_DYNATRACE_URL": "https://dmz123.dynatrace-managed.example.com",
-        "DT_MANAGED_API_TOKEN": "dt0s16.SAMPLE.abcd1234"
+        "DT_ENVIRONMENT_CONFIGS": "[{\"dynatraceUrl\":\"https://my-dashboard-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api-endpoint.com/\",\"environmentId\":\"my-env-id-1\",\"alias\":\"alias-env\",\"apiToken\":\"my-api-token\"},{\"dynatraceUrl\":\"https://my-dashboard2-endpoint.com/\",\"apiEndpointUrl\":\"https://my-api2-endpoint.com/\",\"environmentId\":\"my-env-id-2\",\"alias\":\"alias-env-2\",\"apiToken\":\"my-api-token-2\"}]",
         "DT_MCP_DISABLE_TELEMETRY": "true",
         "LOG_LEVEL": "debug"
       },

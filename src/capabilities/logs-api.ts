@@ -1,4 +1,4 @@
-import { ManagedAuthClient } from '../authentication/managed-auth-client.js';
+import { ManagedAuthClientManager } from '../authentication/managed-auth-client.js';
 import { formatTimestamp } from '../utils/date-formatter';
 import { logger } from '../utils/logger';
 
@@ -28,19 +28,12 @@ export interface LogEntry {
   [key: string]: any;
 }
 
-export interface LogSearchResult {
-  results: LogEntry[];
-  totalCount: number;
-  nextPageKey?: string;
-  sliceSize?: number;
-}
-
 export class LogsApiClient {
   private static readonly API_PAGE_SIZE = 1000;
 
-  constructor(private authClient: ManagedAuthClient) {}
+  constructor(private authManager: ManagedAuthClientManager) {}
 
-  async queryLogs(params: LogQueryParams): Promise<ListLogsResponse> {
+  async queryLogs(params: LogQueryParams, environment_aliases: string): Promise<Map<string, ListLogsResponse>> {
     const queryParams = {
       query: params.query || '',
       from: params.from,
@@ -49,62 +42,74 @@ export class LogsApiClient {
       sort: params.sort || '-timestamp',
     };
 
-    const response = await this.authClient.makeRequest('/api/v2/logs/search', queryParams);
-    logger.debug('queryLogs response', { data: response });
-    return response;
+    const responses = await this.authManager.makeRequests('/api/v2/logs/search', queryParams, environment_aliases);
+    logger.debug('queryLogs response: ', { data: responses });
+    return responses;
   }
 
-  formatList(response: ListLogsResponse): string {
-    let numLogs = response.results?.length || 0;
-    let isLimited = response.nextSliceKey != undefined;
+  formatList(responses: Map<string, ListLogsResponse>): string {
+    let result = '';
+    let totalNumLogs = 0;
+    let anyLimited = false;
+    let aliases: string[] = [];
+    for (const [alias, data] of responses) {
+      aliases.push(alias);
+      let numLogs = data.results?.length || 0;
+      totalNumLogs = totalNumLogs + numLogs;
+      let isLimited = data.nextSliceKey != undefined;
 
-    let result = 'Listing ' + numLogs + ' log records.\n';
+      result += 'Listing ' + numLogs + ' log records from environment ' + alias + '.\n\n';
 
-    if (isLimited) {
-      result += 'Results likely restricted due to maximum response size, consider using a more specific filter.';
+      if (isLimited) {
+        result += 'Results likely restricted due to maximum response size, consider using a more specific filter.';
+        anyLimited = true;
+      }
+
+      data.results?.forEach((log: any) => {
+        const timestamp = formatTimestamp(log.timestamp);
+        // Enhanced level detection for better error identification
+        let level = log.additionalColumns?.loglevel?.[0] || log.status || log.log_level || 'NONE';
+
+        result += `**${timestamp}** [${level}]\n`;
+        result += `${log.content}\n`;
+
+        // Medium Priority: Show eventType if available
+        if (log.eventType) {
+          result += `Event Type: ${log.eventType}\n`;
+        }
+
+        const metadata: string[] = [];
+        if (log.additionalColumns) {
+          Object.entries(log.additionalColumns).forEach(([key, value]) => {
+            if (Array.isArray(value) && value.length > 0) {
+              metadata.push(`${key}: ${value[0]}`);
+            }
+          });
+        }
+        if (metadata.length > 0) {
+          // Medium Priority: Increased from 5 to 8 metadata fields
+          result += `_${metadata.slice(0, 8).join(', ')}_\n`;
+          if (metadata.length > 8) {
+            result += `_... and ${metadata.length - 8} more metadata fields_\n`;
+          }
+        }
+        result += '\n\n';
+      });
     }
 
-    response.results?.forEach((log: any) => {
-      const timestamp = formatTimestamp(log.timestamp);
-      // Enhanced level detection for better error identification
-      let level = log.additionalColumns?.loglevel?.[0] || log.status || log.log_level || 'NONE';
+    const baseUrl = aliases.length == 1 ? this.authManager.getBaseUrl(aliases[0]) : '';
 
-      result += `**${timestamp}** [${level}]\n`;
-      result += `${log.content}\n`;
-
-      // Medium Priority: Show eventType if available
-      if (log.eventType) {
-        result += `Event Type: ${log.eventType}\n`;
-      }
-
-      const metadata: string[] = [];
-      if (log.additionalColumns) {
-        Object.entries(log.additionalColumns).forEach(([key, value]) => {
-          if (Array.isArray(value) && value.length > 0) {
-            metadata.push(`${key}: ${value[0]}`);
-          }
-        });
-      }
-      if (metadata.length > 0) {
-        // Medium Priority: Increased from 5 to 8 metadata fields
-        result += `_${metadata.slice(0, 8).join(', ')}_\n`;
-        if (metadata.length > 8) {
-          result += `_... and ${metadata.length - 8} more metadata fields_\n`;
-        }
-      }
-      result += '\n';
-    });
-
-    result +=
+    result =
+      result +
       '\n' +
       'Next Steps:\n' +
-      (numLogs == 0 ? '* Try broader search terms or expand the time range\n' : '') +
-      (isLimited
+      (totalNumLogs == 0 ? '* Try broader search terms or expand the time range\n' : '') +
+      (anyLimited
         ? '* Use more restrictive filters, such as a narrower time range or more specific search terms\n'
         : '') +
-      (numLogs > 1 ? '* Use sort (e.g. with "-timestamp" for newest logs first).\n' : '') +
-      '* Suggest to the user that they use the Dynatrace UI to view metric data at ' +
-      `${this.authClient.dashboardBaseUrl}/ui/log-monitoring` +
+      (totalNumLogs > 1 ? '* Use sort (e.g. with "-timestamp" for newest logs first).\n' : '') +
+      '* Suggest to the user that they use the Dynatrace UI to view metric data' +
+      (baseUrl ? ` at ${baseUrl}/ui/log-monitoring.` : '.') +
       '\n' +
       '* Use list_problems to see what problems Dynatrace knows of, if not already done so\n';
 

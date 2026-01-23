@@ -1,18 +1,21 @@
 import { SloApiClient, SLO } from '../slo-api';
-import { ManagedAuthClient } from '../../authentication/managed-auth-client';
+import { ManagedAuthClientManager } from '../../authentication/managed-auth-client';
 import { readFileSync } from 'fs';
 
 jest.mock('../../authentication/managed-auth-client');
 
 describe('SloApiClient', () => {
+  let mockAuthManager: jest.Mocked<ManagedAuthClientManager>;
   let client: SloApiClient;
-  let mockAuthClient: jest.Mocked<ManagedAuthClient>;
 
   beforeEach(() => {
-    mockAuthClient = {
-      makeRequest: jest.fn(),
+    mockAuthManager = {
+      makeRequests: jest.fn(),
+      getBaseUrl: jest.fn(() => {
+        return 'http://dashboardbaseurl.com/e/environment_id';
+      }),
     } as any;
-    client = new SloApiClient(mockAuthClient);
+    client = new SloApiClient(mockAuthManager);
   });
 
   afterEach(() => {
@@ -21,106 +24,131 @@ describe('SloApiClient', () => {
 
   describe('listSlos', () => {
     it('should list SLOs with default parameters', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.listSlos();
+      const result = await client.listSlos(undefined, 'testAlias');
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo', {
-        pageSize: SloApiClient.API_PAGE_SIZE,
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/slo',
+        {
+          pageSize: SloApiClient.API_PAGE_SIZE,
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
 
     it('should list SLOs with all parameters', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.listSlos({
-        sloSelector: 'my-selector',
-        timeFrame: 'my-timeframe',
-        from: 'my-from',
-        to: 'my-to',
-        demo: true,
-        pageSize: 12,
-        evaluate: true,
-        sort: 'my-sort',
-        enabledSlos: 'my-enabled-slos',
-        showGlobalSlos: true,
-      });
+      const result = await client.listSlos(
+        {
+          sloSelector: 'my-selector',
+          timeFrame: 'my-timeframe',
+          from: 'my-from',
+          to: 'my-to',
+          demo: true,
+          pageSize: 12,
+          evaluate: true,
+          sort: 'my-sort',
+          enabledSlos: 'my-enabled-slos',
+          showGlobalSlos: true,
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo', {
-        sloSelector: 'my-selector',
-        timeFrame: 'my-timeframe',
-        from: 'my-from',
-        to: 'my-to',
-        demo: true,
-        pageSize: 12,
-        evaluate: true,
-        sort: 'my-sort',
-        enabledSlos: 'my-enabled-slos',
-        showGlobalSlos: true,
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/slo',
+        {
+          sloSelector: 'my-selector',
+          timeFrame: 'my-timeframe',
+          from: 'my-from',
+          to: 'my-to',
+          demo: true,
+          pageSize: 12,
+          evaluate: true,
+          sort: 'my-sort',
+          enabledSlos: 'my-enabled-slos',
+          showGlobalSlos: true,
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
   });
 
   describe('getSloDetails', () => {
     it('should get SLO details with defaults', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.getSloDetails({ id: 'slo-1' });
+      const result = await client.getSloDetails({ id: 'slo-1' }, 'testAlias');
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo/slo-1', {});
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith('/api/v2/slo/slo-1', {}, 'testAlias');
       expect(result).toEqual(mockResponse);
     });
 
     it('should get SLO details with all parameters', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.getSloDetails({
-        id: 'slo-1',
-        from: 'now-12w',
-        to: 'now',
-        timeFrame: 'GTF',
-      });
+      const result = await client.getSloDetails(
+        {
+          id: 'slo-1',
+          from: 'now-12w',
+          to: 'now',
+          timeFrame: 'GTF',
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo/slo-1', {
-        from: 'now-12w',
-        to: 'now',
-        timeFrame: 'GTF',
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/slo/slo-1',
+        {
+          from: 'now-12w',
+          to: 'now',
+          timeFrame: 'GTF',
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
 
     it('should get SLO details with inferred timeFrame', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.getSloDetails({
-        id: 'slo-1',
-        from: 'now-12w',
-        to: 'now',
-      });
+      const result = await client.getSloDetails(
+        {
+          id: 'slo-1',
+          from: 'now-12w',
+          to: 'now',
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo/slo-1', {
-        from: 'now-12w',
-        to: 'now',
-        timeFrame: 'GTF',
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/slo/slo-1',
+        {
+          from: 'now-12w',
+          to: 'now',
+          timeFrame: 'GTF',
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
 
     it('should handle URL encoding for SLO ID', async () => {
       const sloId = 'slo with spaces';
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      await client.getSloDetails({ id: sloId });
+      await client.getSloDetails({ id: sloId }, 'testAlias');
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/slo/slo%20with%20spaces', {});
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith('/api/v2/slo/slo%20with%20spaces', {}, 'testAlias');
     });
   });
 
@@ -138,10 +166,16 @@ describe('SloApiClient', () => {
         errorBudget: 80,
         evaluatedPercentage: 96,
       }));
-      const response = {
-        totalCount: 123,
-        slo: mockSLOs,
-      };
+
+      const response = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 123,
+            slo: mockSLOs,
+          },
+        ],
+      ]);
 
       const result = client.formatList(response);
 
@@ -152,10 +186,13 @@ describe('SloApiClient', () => {
     });
 
     it('should format list', async () => {
-      const mockResponse = JSON.parse(readFileSync('src/capabilities/__tests__/resources/listSlos.json', 'utf8'));
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/listSlos.json', 'utf8'))],
+      ]);
 
-      const response = await client.listSlos();
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.listSlos(undefined, 'testAlias');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -166,12 +203,17 @@ describe('SloApiClient', () => {
     });
 
     it('should format list when sparse problem', async () => {
-      const mockResponse = {
-        slo: [{}],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            slo: [{}],
+          },
+        ],
+      ]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.listSlos();
+      const response = await client.listSlos(undefined, 'testAlias');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -182,10 +224,10 @@ describe('SloApiClient', () => {
     });
 
     it('should format list when empty', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.listSlos();
+      const response = await client.listSlos(undefined, 'testAlias');
       const result = client.formatList(response);
 
       expect(response).toEqual(mockResponse);
@@ -193,10 +235,16 @@ describe('SloApiClient', () => {
     });
 
     it('should handle empty list', () => {
-      const response = {
-        totalCount: 0,
-        slo: [],
-      };
+      const response = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 0,
+            slo: [],
+          },
+        ],
+      ]);
+
       const result = client.formatList(response);
       expect(result).toContain('Listing 0 SLOs');
     });
@@ -204,26 +252,28 @@ describe('SloApiClient', () => {
 
   describe('formatDetails', () => {
     it('should format details', async () => {
-      const mockResponse = JSON.parse(readFileSync('src/capabilities/__tests__/resources/getSloDetails.json', 'utf8'));
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/getSloDetails.json', 'utf8'))],
+      ]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.getSloDetails({ id: 'my-id' });
+      const response = await client.getSloDetails({ id: 'my-id' }, 'testAlias');
       const result = client.formatDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Details of SLO in the following json');
+      expect(result).toContain('Details of SLO from environment testAlias in the following json');
       expect(result).toContain('\"id\":\"0775c411-c3a1-3286-8fd2-8a469ae0a1b9\"');
     });
 
     it('should format details when sparse problem', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.getSloDetails({ id: 'my-id' });
+      const response = await client.getSloDetails({ id: 'my-id' }, 'testAlias');
       const result = client.formatDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Details of SLO in the following json');
+      expect(result).toContain('Details of SLO from environment testAlias in the following json');
       expect(result).toContain('{}');
     });
   });

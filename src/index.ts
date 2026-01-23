@@ -7,9 +7,9 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { Command } from 'commander';
 import { z, ZodRawShape, ZodTypeAny } from 'zod';
 import { getPackageJsonVersion } from './utils/version';
-import { ManagedAuthClient } from './authentication/managed-auth-client';
-import { getManagedEnvironmentConfig } from './utils/environment';
-import { createTelemetry, Telemetry } from './utils/telemetry-openkit';
+import { ManagedAuthClientManager } from './authentication/managed-auth-client';
+import { getManagedEnvironmentConfigs, validateEnvironments } from './utils/environment';
+import { createTelemetry } from './utils/telemetry-openkit';
 import { MetricsApiClient } from './capabilities/metrics-api';
 import { LogsApiClient } from './capabilities/logs-api';
 
@@ -20,7 +20,7 @@ import { SecurityApiClient } from './capabilities/security-api';
 import { SloApiClient } from './capabilities/slo-api';
 
 // Import logger after environment is loaded
-import { logger } from './utils/logger';
+import { logger, flushLogger } from './utils/logger';
 
 logger.info('Starting Dynatrace Managed MCP');
 
@@ -43,32 +43,36 @@ const main = async () => {
   logger.info(`Initializing Dynatrace Managed MCP Server v${getPackageJsonVersion()}...`);
 
   // Read Managed environment configuration
-  let managedConfig;
-  try {
-    managedConfig = getManagedEnvironmentConfig();
-  } catch (err) {
-    console.error('Failed to get managed environment configuration', err);
-    logger.error('Failed to get managed environment configuration', { error: err });
+
+  const managedConfigs = getManagedEnvironmentConfigs();
+  const validatedConfigs = validateEnvironments(managedConfigs);
+
+  const initErrors = validatedConfigs['errors'];
+  const initConfigs = validatedConfigs['valid_configs'];
+
+  if (initErrors.length > 0) {
+    logger.error('Failed to get managed environments configurations: ', { error: initErrors });
+    console.error('Failed to get managed environments configurations: ', { error: initErrors });
+  }
+
+  if (initConfigs.length === 0) {
+    logger.error('No valid environments found, stopping.');
+    console.error('No valid environments found, stopping.');
+    await flushLogger();
     process.exit(1);
   }
 
-  const { environmentId, apiUrl, dashboardUrl, apiToken } = managedConfig;
-
-  // Initialize Managed authentication client
-  const authClient = new ManagedAuthClient({
-    apiBaseUrl: apiUrl,
-    dashboardBaseUrl: dashboardUrl,
-    apiToken: apiToken,
-  });
+  const authClientManager = new ManagedAuthClientManager(initConfigs);
+  await authClientManager.isConfigured();
 
   // Initialize API clients
-  const metricsClient = new MetricsApiClient(authClient);
-  const logsClient = new LogsApiClient(authClient);
-  const eventsClient = new EventsApiClient(authClient);
-  const entitiesClient = new EntitiesApiClient(authClient);
-  const problemsClient = new ProblemsApiClient(authClient);
-  const securityClient = new SecurityApiClient(authClient);
-  const sloClient = new SloApiClient(authClient);
+  const metricsClient = new MetricsApiClient(authClientManager);
+  const logsClient = new LogsApiClient(authClientManager);
+  const eventsClient = new EventsApiClient(authClientManager);
+  const entitiesClient = new EntitiesApiClient(authClientManager);
+  const problemsClient = new ProblemsApiClient(authClientManager);
+  const securityClient = new SecurityApiClient(authClientManager);
+  const sloClient = new SloApiClient(authClientManager);
 
   // Initialize usage tracking
   const telemetry = createTelemetry();
@@ -81,6 +85,7 @@ const main = async () => {
       for (const op of shutdownOps) {
         await op();
       }
+      await flushLogger();
       process.exit(0);
     };
   };
@@ -97,16 +102,16 @@ const main = async () => {
         elicitation: {},
       },
       instructions: `
-This MCP server connects to a Dynatrace Managed (self-hosted) environment for Observabilitiy. This can include metrics, logs and traces,
+This MCP server connects to Dynatrace Managed (self-hosted) environments for Observabilitiy. This can include metrics, logs and traces,
 and detection of problems and security vulnerabilities relating to these.
 
-Some users may configure two MCPs at the same time: this MCP to connect to their Dynatrace Managed, and a second MCP to connect to their SaaS environment.
+Some users may configure two MCPs at the same time: this MCP to connect to their Dynatrace Managed instances, and a second MCP to connect to their SaaS environment.
 Be careful of which MCP to use. If it is unclear, ask the user which they want to use. Ask the user to confirm the difference between their two environments.
 
 **Key Context:**
-- This server accesses self-hosted Dynatrace Managed clusters (not the SaaS environment)
-- Designed for historical data analysis before migration to SaaS
-- Minimum supported cluster version: ${authClient.MINIMUM_VERSION}
+- This MCP server accesses self-hosted Dynatrace Managed clusters (not the SaaS version of Dynatrace)
+- This MCP server can be used to interact with multiple Dynatrace Managed environments
+- Minimum supported cluster version: ${authClientManager.MINIMUM_VERSION}
 - Two different ways that Dynatrace Managed may be being used:
    1. Dynatrace Managed may be the primary Observability system, containing all live data.
    2. Or alternatively the customer may have migrated to Dynatrace SaaS, leavng historical observability data in Dynatrace Managed from before the migration, in which case this MCP Server would only be used to access historical data.
@@ -121,13 +126,18 @@ Be careful of which MCP to use. If it is unclear, ask the user which they want t
 - **SLO Management**: Service Level Objective monitoring, error budget analysis, and SLO evaluation tracking
 
 **Best Practices:**
+- Must start by calling the tool get_environments_info. It will return a list of the available environments, including
+  details of connection errors and configuration errors.
+   - **CRITICAL: must report issues with environment configurations and connections to the user before any other requests**.
+- On every subsequent request, an "environment_alias" must be passed.
+   - If the user wants information of all available environments, "environment_alias" MUST be "ALL_ENVIRONMENTS"
 - Use specific time ranges (1-2 hours) rather than large historical queries for better performance
 - Leverage entity selectors to filter data at the source - they are fundamental to getting good results
 - Use problem IDs (UUID format) from list_problems, not display IDs (P-XXXXX)
-- Start with get_environment_info to understand cluster capabilities and data range
 - **When users specify counts** (e.g., "first 25 errors", "50 metrics", "100 errors"), always use the "limit" parameter in tools rather than guessing with searchText
 - **Avoid searchText guessing** - only use searchText when user explicitly mentions keywords to search for
 - **discover_entities ALWAYS requires entitySelector** - never call this tool without providing an entitySelector with exactly ONE entity type like type("SERVICE") unless using an EntityId. Multiple entity types are NOT supported.
+- **Next Steps are important** All requests will come back with a footer called 'Next Steps'. Take into consideration what it says.
 
 **Time Range Parameters:**
 - **Relative Times**: now-1h, now-24h, now-7d, now-30d (h=hours, d=days, m=minutes, s=seconds)
@@ -184,40 +194,11 @@ For entity-based Analysis:
  3. get_entity_details (using use exact entityId)
  4. list_problems or list_events, using the entityId in the entitySelector.
 
-Always be cautious to avoid overloading the self-hosted Dynatrace Managed clusters. 
+Always be cautious to avoid overloading the self-hosted Dynatrace Managed clusters.
 Never run queries that could return very large amounts of data, or that could be very expensive to compute.
 `,
     },
   );
-
-  // Test connection to Managed cluster
-  logger.info(`Testing connection to Dynatrace Managed cluster: ${apiUrl}...`);
-
-  try {
-    const isConnected = await authClient.validateConnection();
-    if (!isConnected) {
-      throw new Error('Connection validation failed');
-    }
-    logger.info(`Called validateConnection`);
-
-    const clusterVersion = await authClient.getClusterVersion();
-    logger.info(`Connected to Managed cluster version ${clusterVersion.version}`);
-
-    const isValidVersion = authClient.validateMinimumVersion(clusterVersion);
-    if (!isValidVersion) {
-      logger.info(
-        `Warning: Cluster version ${clusterVersion.version} may not support all features. Minimum recommended version is${authClient.MINIMUM_VERSION}`,
-      );
-    }
-  } catch (error: any) {
-    logger.error(`Failed to connect to Managed cluster ${apiUrl}: ${error.message}`);
-    logger.error('Please verify:');
-    logger.error('1. DT_MANAGED_ENVIRONMENT URL is correct');
-    logger.error(`2. DT_MANAGED_API_TOKEN has required scopes: ${MANAGED_API_SCOPES.join(', ')}`);
-    logger.error('3. Network connectivity to the Managed cluster');
-
-    process.exit(2);
-  }
 
   // Ready to start the server
   logger.info(`Starting Dynatrace Managed MCP Server v${getPackageJsonVersion()}...`);
@@ -290,23 +271,78 @@ Never run queries that could return very large amounts of data, or that could be
     server.tool(name, description, paramsSchema, annotations, (args: z.ZodRawShape) => wrappedCb(args));
   };
 
+  const envAliasValidate = (alias: string) => {
+    if (alias == 'ALL_ENVIRONMENTS') {
+      return true;
+    }
+    const env_list = alias.split(';');
+    for (const env_alias of env_list) {
+      if (!authClientManager.validAliases.includes(env_alias)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   tool(
-    'dynatrace_managed_get_environment_info',
-    'Get information about the connected Dynatrace Managed cluster and verify the connection and authentication.',
+    'dynatrace_managed_check_for_configuration_errors',
+    'Returns information about environment configurations and any potential error found during initialization',
     {},
     {
       readOnlyHint: true,
     },
     async ({}) => {
-      const clusterVersion = await authClient.getClusterVersion();
-      const isValidVersion = authClient.validateMinimumVersion(clusterVersion);
+      let resp = `Dynatrace Managed Environments Information - Listing configuration errors found during initialization:\n\n`;
+      if (initErrors.length > 0) {
+        resp += `Issues where found in environment configurations during start up: \n`;
+        for (const errorMessage of initErrors) {
+          resp += `- ${errorMessage}\n`;
+        }
+        resp += `\nPlease review all environment information and try again. \n`;
+      }
 
-      let resp = `Dynatrace Managed Cluster Information:\n`;
-      resp += `- API URL: ${apiUrl}\n`;
-      resp += `- Dashboard URL: ${dashboardUrl}\n`;
-      resp += `- Version: ${clusterVersion.version}\n`;
-      resp += `- Minimum Version Check: ${isValidVersion ? 'PASSED' : 'WARNING - Version may not be fully compatible and may not support all features'}\n`;
-      resp += `- Available API Scopes: ${MANAGED_API_SCOPES.join(', ')}\n`;
+      return resp;
+    },
+  );
+
+  tool(
+    'dynatrace_managed_get_environments_info',
+    'Get information about all connected Dynatrace Managed clusters and verify the connections and authentication services.',
+    {},
+    {
+      readOnlyHint: true,
+    },
+    async ({}) => {
+      let resp = `Dynatrace Managed Cluster Information - Listing info for ${authClientManager.rawClients.length} environments:\n\n`;
+
+      for (let authClient of authClientManager.rawClients) {
+        resp += `- Environment Alias: ${authClient.alias}\n`;
+        resp += `- API URL: ${authClient.apiBaseUrl}\n`;
+        resp += `- Dashboard URL: ${authClient.dashboardBaseUrl}\n`;
+        resp += `- Valid Environment: ${authClient.isValid ? 'Yes' : 'No'}\n`;
+        let clusterVersion;
+        let isValidVersion;
+        if (authClient.isValid) {
+          clusterVersion = await authClient.getClusterVersion();
+          isValidVersion = authClient.validateMinimumVersion(clusterVersion);
+
+          resp += `- Version: ${clusterVersion.version}\n`;
+          resp += `- Minimum Version Check: ${isValidVersion ? 'PASSED' : 'WARNING - Version may not be fully compatible and may not support all features'}\n`;
+          resp += `- Available API Scopes: ${MANAGED_API_SCOPES.join(', ')}\n\n\n`;
+        } else {
+          resp += `- Error message: ${authClient.validationError}\n`;
+        }
+      }
+
+      if (initErrors.length > 0) {
+        resp += `Issues were found in environment configurations during start up: \n`;
+        for (const errorMessage of initErrors) {
+          resp += `- ${errorMessage}\n`;
+        }
+        resp += `\nPlease review all environments connection information. \n`;
+      }
+
+      resp += `\n\n\nAll Dynatrace Managed Cluster Environments listed. Environment showing connection errors and environments with "Valid environment" set to "No" are invalid environments.\n\n`;
 
       return resp;
     },
@@ -321,7 +357,7 @@ Never run queries that could return very large amounts of data, or that could be
         .string()
         .optional()
         .describe(
-          `Entity selector to filter metrics. Must use at most one entity type per query. 
+          `Entity selector to filter metrics. Must use at most one entity type per query.
           Examples include:
            * type(SERVICE)
            * entityId("id1","id2")
@@ -332,42 +368,55 @@ Never run queries that could return very large amounts of data, or that could be
         .string()
         .optional()
         .describe(
-          `Text to search for in metric names and descriptions. 
-          **RECOMMENDED SEARCHES**: "response.time" (latency), "cpu.usage" (CPU), "memory" (memory), 
+          `Text to search for in metric names and descriptions.
+          **RECOMMENDED SEARCHES**: "response.time" (latency), "cpu.usage" (CPU), "memory" (memory),
           "error.rate" (errors), "throughput" (performance), "availability" (uptime)`,
         ),
       limit: z
         .number()
         .optional()
         .describe(
-          `Maximum number of metrics to return. Use this when user specifies a count 
-          (e.g., "first 16 metrics" → limit: 16, "500 metrics" → limit: 500). 
+          `Maximum number of metrics to return. Use this when user specifies a count
+          (e.g., "first 16 metrics" → limit: 16, "500 metrics" → limit: 500).
           If not specified, returns up to API limit: ${MetricsApiClient.API_PAGE_SIZE}`,
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ entitySelector, searchText, limit }) => {
-      const response = await metricsClient.listAvailableMetrics({
-        entitySelector: entitySelector,
-        text: searchText,
-        pageSize: limit,
-      });
-      return metricsClient.formatMetricList(response);
+    async ({ entitySelector, searchText, limit, environment_alias }) => {
+      const responses = await metricsClient.listAvailableMetrics(
+        {
+          entitySelector: entitySelector,
+          text: searchText,
+          pageSize: limit,
+        },
+        environment_alias,
+      );
+      return metricsClient.formatMetricList(responses);
     },
   );
 
   tool(
     'dynatrace_managed_query_metrics_data',
     `Query metric data for a specific time range and metric selector.
-    Must limit the amount of data being retreived: 
-    must use a specific entitySelector, such as using specific entityIds; 
+    Must limit the amount of data being retreived:
+    must use a specific entitySelector, such as using specific entityIds;
     must use a narrow timerange (with from and to);
     must use a resolution in line with the timerange, for example if getting data covering several days then the resolution should be hours rather than minutes.`,
     {
       metricSelector: z.string().describe(
-        `Metric selector (e.g., "builtin:service.response.time" for latency, 
+        `Metric selector (e.g., "builtin:service.response.time" for latency,
         "builtin:tech.generic.cpu.usage" for container CPU, "builtin:host.mem.usage" for memory).
         Consider first using the tool list_available_metrics to identity the right metric.`,
       ),
@@ -377,32 +426,45 @@ Never run queries that could return very large amounts of data, or that could be
         .string()
         .optional()
         .describe(
-          `Data resolution. Use a bigger resolution when the timerange is larger. 
+          `Data resolution. Use a bigger resolution when the timerange is larger.
           For example, use "5m" for detailed analysis of data over hour(s), use "1h" for trends of data over a day, use 6h or 1d for data over many days.`,
         ),
       entitySelector: z
         .string()
         .optional()
         .describe(
-          `Entity selector to filter metrics data. CRITICAL: Only ONE entity type per query. 
-          Use discover_entities() first to get exact names/IDs, then use entityId("exact-id") or 
-          type(SERVICE),entityName.equals("exact-name"). Examples: entityId("SERVICE-123"), 
+          `Entity selector to filter metrics data. CRITICAL: Only ONE entity type per query.
+          Use discover_entities() first to get exact names/IDs, then use entityId("exact-id") or
+          type(SERVICE),entityName.equals("exact-name"). Examples: entityId("SERVICE-123"),
           type(SERVICE),entityName("payment-service"), type(AWS_LAMBDA_FUNCTION),tag("AWS_REGION:us-west-2")`,
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ metricSelector, from, to, resolution, entitySelector }) => {
-      const response = await metricsClient.queryMetrics({
-        metricSelector: metricSelector,
-        from: from,
-        to: to,
-        resolution: resolution,
-        entitySelector: entitySelector,
-      });
+    async ({ metricSelector, from, to, resolution, entitySelector, environment_alias }) => {
+      const responses = await metricsClient.queryMetrics(
+        {
+          metricSelector: metricSelector,
+          from: from,
+          to: to,
+          resolution: resolution,
+          entitySelector: entitySelector,
+        },
+        environment_alias,
+      );
 
-      return metricsClient.formatMetricData(response);
+      return metricsClient.formatMetricData(responses);
     },
   );
 
@@ -411,49 +473,72 @@ Never run queries that could return very large amounts of data, or that could be
     'Get detailed information about a specific metric.',
     {
       metricId: z.string().describe('The metric ID to get details for'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ metricId }) => {
-      const response = await metricsClient.getMetricDetails(metricId);
-      return metricsClient.formatMetricDetails(response);
+    async ({ metricId, environment_alias }) => {
+      const responses = await metricsClient.getMetricDetails(metricId, environment_alias);
+      return metricsClient.formatMetricDetails(responses);
     },
   );
 
   tool(
     'dynatrace_managed_query_logs',
-    `Search logs using simple text queries. Results include event types, expanded metadata fields 
-    (up to 8 fields), and enhanced error detection. Managed clusters support basic text search but 
+    `Search logs using simple text queries. Results include event types, expanded metadata fields
+    (up to 8 fields), and enhanced error detection. Managed clusters support basic text search but
     not structured syntax like "content:" or "loglevel:".`,
     {
       query: z.string().describe(
-        `Simple text to search for in log content (e.g., "error", "exception", "timeout"). 
+        `Simple text to search for in log content (e.g., "error", "exception", "timeout").
           Do NOT use structured syntax like "content:error" - just use "error".`,
       ),
       from: z.string().describe('Start time (ISO format or relative like "now-1h")'),
       to: z.string().describe('End time (ISO format or relative like "now")'),
       limit: z.number().optional().describe('Maximum number of logs to return (default: 100)'),
       sort: z.string().optional().describe('Sort order for logs. Use "-timestamp" for most recent first.'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ query, from, to, limit, sort }) => {
-      const response = await logsClient.queryLogs({
-        query: query,
-        from: from,
-        to: to,
-        limit: limit,
-        sort: sort,
-      });
-      return logsClient.formatList(response);
+    async ({ query, from, to, limit, sort, environment_alias }) => {
+      const responses = await logsClient.queryLogs(
+        {
+          query: query,
+          from: from,
+          to: to,
+          limit: limit,
+          sort: sort,
+        },
+        environment_alias,
+      );
+      return logsClient.formatList(responses);
     },
   );
 
   tool(
     'dynatrace_managed_list_events',
-    `List events from the Managed cluster within a specified timeframe. Results include event properties, 
+    `List events from the Managed cluster within a specified timeframe. Results include event properties,
     management zones, severity/impact levels, and detailed metadata for comprehensive analysis.`,
     {
       from: z.string().describe('Start time (ISO format or relative like "now-1h")'),
@@ -462,16 +547,16 @@ Never run queries that could return very large amounts of data, or that could be
         .string()
         .optional()
         .describe(
-          `Filter by event type (e.g., "CONTAINER_RESTART" for certain container issues, 
+          `Filter by event type (e.g., "CONTAINER_RESTART" for certain container issues,
           "CUSTOM_DEPLOYMENT" for deployments, "RESOURCE_CONTENTION_EVENT" for resource issues)`,
         ),
       entitySelector: z
         .string()
         .optional()
         .describe(
-          `Entity selector to filter events. CRITICAL: Only ONE entity type per query. 
-          Use discover_entities() first to get exact names/IDs, then use entityId("exact-id") or 
-          type(SERVICE),entityName.equals("exact-name"). Examples: entityId("SERVICE-123"), 
+          `Entity selector to filter events. CRITICAL: Only ONE entity type per query.
+          Use discover_entities() first to get exact names/IDs, then use entityId("exact-id") or
+          type(SERVICE),entityName.equals("exact-name"). Examples: entityId("SERVICE-123"),
           type(SERVICE),entityName("payment-service"), type(AWS_LAMBDA_FUNCTION),tag("AWS_REGION:us-west-2")`,
         ),
       limit: z
@@ -480,20 +565,33 @@ Never run queries that could return very large amounts of data, or that could be
         .describe(
           `Maximum number of events to return. Use this when user specifies a count (e.g., "first 20 events" → limit: 20). If not specified, returns up to API limit: ${EventsApiClient.API_PAGE_SIZE}`,
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ from, to, eventType, entitySelector, limit }) => {
-      const response = await eventsClient.queryEvents({
-        from: from,
-        to: to,
-        eventType: eventType,
-        entitySelector: entitySelector,
-        pageSize: limit,
-      });
+    async ({ from, to, eventType, entitySelector, limit, environment_alias }) => {
+      const responses = await eventsClient.queryEvents(
+        {
+          from: from,
+          to: to,
+          eventType: eventType,
+          entitySelector: entitySelector,
+          pageSize: limit,
+        },
+        environment_alias,
+      );
 
-      return eventsClient.formatList(response);
+      return eventsClient.formatList(responses);
     },
   );
 
@@ -502,12 +600,22 @@ Never run queries that could return very large amounts of data, or that could be
     'Get detailed information about a specific event.',
     {
       eventId: z.string().describe('The event ID to get details for'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ eventId }) => {
-      const response = await eventsClient.getEventDetails(eventId);
+    async ({ eventId, environment_alias }) => {
+      const response = await eventsClient.getEventDetails(eventId, environment_alias);
       return eventsClient.formatDetails(response);
     },
   );
@@ -515,13 +623,24 @@ Never run queries that could return very large amounts of data, or that could be
   tool(
     'dynatrace_managed_list_entity_types',
     'List all available entity types in the Managed cluster to understand what types of entities can be monitored.',
-    {},
+    {
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
+    },
     {
       readOnlyHint: true,
     },
-    async ({}) => {
-      const response = await entitiesClient.listEntityTypes();
-      return entitiesClient.formatEntityTypeList(response);
+    async ({ environment_alias }) => {
+      const responses = await entitiesClient.listEntityTypes(environment_alias);
+      return entitiesClient.formatEntityTypeList(responses);
     },
   );
 
@@ -530,34 +649,44 @@ Never run queries that could return very large amounts of data, or that could be
     'Get details of an entity type.',
     {
       type: z.string().describe('Name of the entity type, such as SERVICE, APPLICATION, HOST, etc'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ type }) => {
-      const response = await entitiesClient.getEntityTypeDetails(type);
+    async ({ type, environment_alias }) => {
+      const response = await entitiesClient.getEntityTypeDetails(type, environment_alias);
       return entitiesClient.formatEntityTypeDetails(response);
     },
   );
 
   tool(
     'dynatrace_managed_discover_entities',
-    `Discover entities in the Managed cluster using EntitySelector syntax. REQUIRED: Must specify 
-    entitySelector with exactly ONE entity type only. Results include entity properties, tags, 
+    `Discover entities in the Managed cluster using EntitySelector syntax. REQUIRED: Must specify
+    entitySelector with exactly ONE entity type only. Results include entity properties, tags,
     management zones, and relationship counts for comprehensive topology analysis.`,
     {
       entitySelector: z.string().describe(
-        `Entity selector to filter the entities. CRITICAL: Must include exactly ONE entity type 
-          like type("SERVICE") - multiple types NOT supported. Examples: type("SERVICE"), 
-          entityId("ID1"), entityName.contains("name"), entityName.equals("exact"), tag("key:value"), mzName("zone"), 
+        `Entity selector to filter the entities. CRITICAL: Must include exactly ONE entity type
+          like type("SERVICE") - multiple types NOT supported. Examples: type("SERVICE"),
+          entityId("ID1"), entityName.contains("name"), entityName.equals("exact"), tag("key:value"), mzName("zone"),
           healthState("HEALTHY").`,
       ),
       mzSelector: z
         .string()
         .optional()
         .describe(
-          `Optional management zone selector to further scope the query. Use mzId(123,456) for zone IDs 
-          or mzName("Bookstore-FS","Stocks") for zone names. Can combine: mzId(123),mzName("Production"). 
+          `Optional management zone selector to further scope the query. Use mzId(123,456) for zone IDs
+          or mzName("Bookstore-FS","Stocks") for zone names. Can combine: mzId(123),mzName("Production").
           Works alongside entitySelector.`,
         ),
       from: z
@@ -578,20 +707,33 @@ Never run queries that could return very large amounts of data, or that could be
         .string()
         .optional()
         .describe('Sort order for entities. Use "name" for ascending, "-name" for descending by display name.'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ entitySelector, mzSelector, from, to, limit, sort }) => {
-      const response = await entitiesClient.queryEntities({
-        entitySelector: entitySelector,
-        pageSize: limit,
-        mzSelector: mzSelector,
-        from: from,
-        to: to,
-        sort: sort,
-      });
-      return entitiesClient.formatEntityList(response);
+    async ({ entitySelector, mzSelector, from, to, limit, sort, environment_alias }) => {
+      const responses = await entitiesClient.queryEntities(
+        {
+          entitySelector: entitySelector,
+          pageSize: limit,
+          mzSelector: mzSelector,
+          from: from,
+          to: to,
+          sort: sort,
+        },
+        environment_alias,
+      );
+      return entitiesClient.formatEntityList(responses);
     },
   );
 
@@ -600,12 +742,22 @@ Never run queries that could return very large amounts of data, or that could be
     'Get detailed information about a specific entity.',
     {
       entityId: z.string().describe('The entity ID to get details for'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ entityId }) => {
-      const response = await entitiesClient.getEntityDetails(entityId);
+    async ({ entityId, environment_alias }) => {
+      const response = await entitiesClient.getEntityDetails(entityId, environment_alias);
       return entitiesClient.formatEntityDetails(response);
     },
   );
@@ -615,13 +767,23 @@ Never run queries that could return very large amounts of data, or that could be
     'Get relationships that a specific entity has "to" and "from" other entities.',
     {
       entityId: z.string().describe('The entity ID to get relationships for'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ entityId }) => {
-      const response = await entitiesClient.getEntityRelationships(entityId);
-      return entitiesClient.formatEntityRelationships(response);
+    async ({ entityId, environment_alias }) => {
+      const responses = await entitiesClient.getEntityRelationships(entityId, environment_alias);
+      return entitiesClient.formatEntityRelationships(responses);
     },
   );
 
@@ -659,22 +821,35 @@ Never run queries that could return very large amounts of data, or that could be
         .describe(
           'Sort order. Use "+status" (open first), "-status" (closed first), "+startTime" (old first), "-startTime" (new first), or "+relevance"/"-relevance" (with text search).',
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ from, to, status, impactLevel, entitySelector, limit, sort }) => {
-      const response = await problemsClient.listProblems({
-        from: from || 'now-24h',
-        to: to || 'now',
-        status: status,
-        impactLevel: impactLevel,
-        entitySelector: entitySelector,
-        pageSize: limit,
-        sort: sort,
-      });
+    async ({ from, to, status, impactLevel, entitySelector, limit, sort, environment_alias }) => {
+      const responses = await problemsClient.listProblems(
+        {
+          from: from || 'now-24h',
+          to: to || 'now',
+          status: status,
+          impactLevel: impactLevel,
+          entitySelector: entitySelector,
+          pageSize: limit,
+          sort: sort,
+        },
+        environment_alias,
+      );
 
-      return problemsClient.formatList(response);
+      return problemsClient.formatList(responses);
     },
   );
 
@@ -685,12 +860,22 @@ Never run queries that could return very large amounts of data, or that could be
       problemId: z
         .string()
         .describe('The internal problem ID (UUID format) from list_problems - NOT the displayId (P-XXXXX)'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ problemId }) => {
-      const response = await problemsClient.getProblemDetails(problemId);
+    async ({ problemId, environment_alias }) => {
+      const response = await problemsClient.getProblemDetails(problemId, environment_alias);
       return problemsClient.formatDetails(response);
     },
   );
@@ -721,22 +906,35 @@ Never run queries that could return very large amounts of data, or that could be
         .describe(
           'Sort order. Examples: "+status" (open first), "-riskAssessment.riskScore" (highest risk first), "+firstSeenTimestamp" (newest first), "-lastUpdatedTimestamp" (recently updated first).',
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ riskLevel, status, entitySelector, from, to, limit, sort }) => {
-      const response = await securityClient.listSecurityProblems({
-        riskLevel: riskLevel,
-        status: status,
-        entitySelector: entitySelector,
-        from: from,
-        to: to,
-        pageSize: limit,
-        sort: sort,
-      });
+    async ({ riskLevel, status, entitySelector, from, to, limit, sort, environment_alias }) => {
+      const responses = await securityClient.listSecurityProblems(
+        {
+          riskLevel: riskLevel,
+          status: status,
+          entitySelector: entitySelector,
+          from: from,
+          to: to,
+          pageSize: limit,
+          sort: sort,
+        },
+        environment_alias,
+      );
 
-      return securityClient.formatList(response);
+      return securityClient.formatList(responses);
     },
   );
 
@@ -747,12 +945,22 @@ Never run queries that could return very large amounts of data, or that could be
       securityProblemId: z
         .string()
         .describe('The security problem ID (UUID format) from list_security_problems - NOT the displayId (S-XXXXX)'),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ securityProblemId }) => {
-      const response = await securityClient.getSecurityProblemDetails(securityProblemId);
+    async ({ securityProblemId, environment_alias }) => {
+      const response = await securityClient.getSecurityProblemDetails(securityProblemId, environment_alias);
       return securityClient.formatDetails(response);
     },
   );
@@ -803,24 +1011,49 @@ Never run queries that could return very large amounts of data, or that could be
         .describe(
           `Maximum number of SLOs to return. Use this when user specifies a count (e.g., "first 15 SLOs" → limit: 15). If not specified, returns up to API limit: ${SloApiClient.API_PAGE_SIZE}`,
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ sloSelector, timeFrame, from, to, evaluate, sort, enabledSlos, showGlobalSlos, demo, limit }) => {
-      const response = await sloClient.listSlos({
-        sloSelector: sloSelector,
-        timeFrame: timeFrame,
-        from: from,
-        to: to,
-        evaluate: evaluate,
-        sort: sort,
-        enabledSlos: enabledSlos,
-        showGlobalSlos: showGlobalSlos,
-        demo: demo,
-        pageSize: limit,
-      });
-      return sloClient.formatList(response);
+    async ({
+      sloSelector,
+      timeFrame,
+      from,
+      to,
+      evaluate,
+      sort,
+      enabledSlos,
+      showGlobalSlos,
+      demo,
+      limit,
+      environment_alias,
+    }) => {
+      const responses = await sloClient.listSlos(
+        {
+          sloSelector: sloSelector,
+          timeFrame: timeFrame,
+          from: from,
+          to: to,
+          evaluate: evaluate,
+          sort: sort,
+          enabledSlos: enabledSlos,
+          showGlobalSlos: showGlobalSlos,
+          demo: demo,
+          pageSize: limit,
+        },
+        environment_alias,
+      );
+      return sloClient.formatList(responses);
     },
   );
 
@@ -840,17 +1073,30 @@ Never run queries that could return very large amounts of data, or that could be
         .describe(
           'Time frame for SLO evaluation: "CURRENT" for SLO\'s own timeframe, "GTF" for custom timeframe specified by from and to parameters',
         ),
+      environment_alias: z
+        .string()
+        .describe(
+          'Specify which environment to be queried, by supplying the environment alias as returned ' +
+            'by get_environments_info. Can use `ALL_ENVIRONMENTS` to retrieve data from all environments in ' +
+            'one request to MCP.',
+        )
+        .refine((alias) => envAliasValidate(alias), {
+          message: 'Environment alias(es) not valid. Options are: ' + authClientManager.validAliases.join(', '),
+        }),
     },
     {
       readOnlyHint: true,
     },
-    async ({ sloId, from, to, timeFrame }) => {
-      const response = await sloClient.getSloDetails({
-        id: sloId,
-        from: from,
-        to: to,
-        timeFrame: timeFrame,
-      });
+    async ({ sloId, from, to, timeFrame, environment_alias }) => {
+      const response = await sloClient.getSloDetails(
+        {
+          id: sloId,
+          from: from,
+          to: to,
+          timeFrame: timeFrame,
+        },
+        environment_alias,
+      );
       return sloClient.formatDetails(response);
     },
   );
@@ -973,5 +1219,6 @@ main().catch(async (error) => {
   } catch (e: any) {
     logger.error(`Failed to track fatal error: ${e.message}`, { error: e });
   }
+  await flushLogger();
   process.exit(1);
 });

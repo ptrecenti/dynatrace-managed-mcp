@@ -1,18 +1,21 @@
 import { MetricsApiClient, Metric } from '../metrics-api';
-import { ManagedAuthClient } from '../../authentication/managed-auth-client';
+import { ManagedAuthClientManager } from '../../authentication/managed-auth-client';
 import { readFileSync } from 'fs';
 
 jest.mock('../../authentication/managed-auth-client');
 
 describe('MetricsApiClient', () => {
-  let mockAuthClient: jest.Mocked<ManagedAuthClient>;
+  let mockAuthManager: jest.Mocked<ManagedAuthClientManager>;
   let client: MetricsApiClient;
 
   beforeEach(() => {
-    mockAuthClient = {
-      makeRequest: jest.fn(),
+    mockAuthManager = {
+      makeRequests: jest.fn(),
+      getBaseUrl: jest.fn(() => {
+        return 'http://dashboardbaseurl.com/e/environment_id';
+      }),
     } as any;
-    client = new MetricsApiClient(mockAuthClient);
+    client = new MetricsApiClient(mockAuthManager);
   });
 
   afterEach(() => {
@@ -21,76 +24,98 @@ describe('MetricsApiClient', () => {
 
   describe('queryMetrics', () => {
     it('should query metric data with all parameters', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.queryMetrics({
-        metricSelector: 'builtin:service.response.time',
-        from: 'now-1h',
-        to: 'now',
-        resolution: '5m',
-        entitySelector: 'type(SERVICE)',
-      });
+      const result = await client.queryMetrics(
+        {
+          metricSelector: 'builtin:service.response.time',
+          from: 'now-1h',
+          to: 'now',
+          resolution: '5m',
+          entitySelector: 'type(SERVICE)',
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/metrics/query', {
-        metricSelector: 'builtin:service.response.time',
-        resolution: '5m',
-        from: 'now-1h',
-        to: 'now',
-        entitySelector: 'type(SERVICE)',
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/metrics/query',
+        {
+          metricSelector: 'builtin:service.response.time',
+          resolution: '5m',
+          from: 'now-1h',
+          to: 'now',
+          entitySelector: 'type(SERVICE)',
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
   });
 
   describe('listAvailableMetrics', () => {
     it('should pass all params', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.listAvailableMetrics({
-        entitySelector: 'my-entity-selector',
-        metadataSelector: 'my-metadata-selector',
-        text: 'my-text',
-        fields: 'my-fields',
-        pageSize: 12,
-        nextPageKey: 'my-page-key',
-        writtenSince: 'my-written-since',
-      });
+      const result = await client.listAvailableMetrics(
+        {
+          entitySelector: 'my-entity-selector',
+          metadataSelector: 'my-metadata-selector',
+          text: 'my-text',
+          fields: 'my-fields',
+          pageSize: 12,
+          nextPageKey: 'my-page-key',
+          writtenSince: 'my-written-since',
+        },
+        'testAlias',
+      );
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/metrics', {
-        entitySelector: 'my-entity-selector',
-        metadataSelector: 'my-metadata-selector',
-        text: 'my-text',
-        fields: 'my-fields',
-        pageSize: 12,
-        nextPageKey: 'my-page-key',
-        writtenSince: 'my-written-since',
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/metrics',
+        {
+          entitySelector: 'my-entity-selector',
+          metadataSelector: 'my-metadata-selector',
+          text: 'my-text',
+          fields: 'my-fields',
+          pageSize: 12,
+          nextPageKey: 'my-page-key',
+          writtenSince: 'my-written-since',
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
 
     it('should pass default params', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const result = await client.listAvailableMetrics();
+      const result = await client.listAvailableMetrics({}, 'testAlias');
 
-      expect(mockAuthClient.makeRequest).toHaveBeenCalledWith('/api/v2/metrics', {
-        pageSize: 500,
-      });
+      expect(mockAuthManager.makeRequests).toHaveBeenCalledWith(
+        '/api/v2/metrics',
+        {
+          pageSize: 500,
+        },
+        'testAlias',
+      );
       expect(result).toEqual(mockResponse);
     });
   });
 
   describe('formatList', () => {
     it('should format list', async () => {
-      const mockResponse = JSON.parse(
-        readFileSync('src/capabilities/__tests__/resources/listAvailableMetrics.json', 'utf8'),
-      );
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          JSON.parse(readFileSync('src/capabilities/__tests__/resources/listAvailableMetrics.json', 'utf8')),
+        ],
+      ]);
 
-      const response = await client.listAvailableMetrics({});
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.listAvailableMetrics({}, 'testAlias');
       const result = client.formatMetricList(response);
 
       expect(response).toEqual(mockResponse);
@@ -105,10 +130,17 @@ describe('MetricsApiClient', () => {
         metricId: `builtin:metric.${i}`,
         displayName: `Metric ${i}`,
       }));
-      const response = {
-        totalCount: 200,
-        metrics: mockMetrics,
-      };
+
+      const response = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 200,
+            metrics: mockMetrics,
+          },
+        ],
+      ]);
+
       const result = client.formatMetricList(response);
 
       expect(result).toContain('Listing 100 of 200 metrics');
@@ -117,12 +149,18 @@ describe('MetricsApiClient', () => {
     });
 
     it('should format list when sparse metric', async () => {
-      const mockResponse = {
-        metrics: [{}],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            metrics: [{}],
+          },
+        ],
+      ]);
 
-      const response = await client.listAvailableMetrics({});
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.listAvailableMetrics({}, 'ALL_ENVIRONMENTS');
       const result = client.formatMetricList(response);
 
       expect(response).toEqual(mockResponse);
@@ -131,10 +169,10 @@ describe('MetricsApiClient', () => {
     });
 
     it('should format list when empty', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.listAvailableMetrics({});
+      const response = await client.listAvailableMetrics({}, 'testAlias');
       const result = client.formatMetricList(response);
 
       expect(response).toEqual(mockResponse);
@@ -142,13 +180,19 @@ describe('MetricsApiClient', () => {
     });
 
     it('should handle empty list', async () => {
-      const mockResponse = {
-        totalCount: 0,
-        metrics: [],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 0,
+            metrics: [],
+          },
+        ],
+      ]);
 
-      const response = await client.listAvailableMetrics({});
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.listAvailableMetrics({}, 'testAlias');
       const result = client.formatMetricList(response);
 
       expect(result).toContain('Listing 0 metrics');
@@ -157,43 +201,50 @@ describe('MetricsApiClient', () => {
 
   describe('formatMetricDetails', () => {
     it('should format details', async () => {
-      const mockResponse = JSON.parse(
-        readFileSync('src/capabilities/__tests__/resources/getMetricDetails.json', 'utf8'),
-      );
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/getMetricDetails.json', 'utf8'))],
+      ]);
 
-      const response = await client.getMetricDetails('my-id');
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.getMetricDetails('my-id', 'testAlias');
       const result = client.formatMetricDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Details of metric in the following json');
+      expect(result).toContain('Details of metric from environment testAlias in the following json');
       expect(result).toContain('\"displayName\":\"CPU usage %\"');
       expect(result).toContain('\"metricId\":\"builtin:host.cpu.usage\"');
     });
 
     it('should format details when sparse data', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.getMetricDetails('my-id');
+      const response = await client.getMetricDetails('my-id', 'testAlias');
       const result = client.formatMetricDetails(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Details of metric in the following json');
+      expect(result).toContain('Details of metric from environment testAlias in the following json');
       expect(result).toContain('{}');
     });
   });
 
   describe('formatMetricData', () => {
     it('should format list', async () => {
-      const mockResponse = JSON.parse(readFileSync('src/capabilities/__tests__/resources/queryMetrics.json', 'utf8'));
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        ['testAlias', JSON.parse(readFileSync('src/capabilities/__tests__/resources/queryMetrics.json', 'utf8'))],
+      ]);
 
-      const response = await client.queryMetrics({ metricSelector: 'my-selector', from: 'now-1h', to: 'now' });
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+
+      const response = await client.queryMetrics(
+        { metricSelector: 'my-selector', from: 'now-1h', to: 'now' },
+        'testAlias',
+      );
       const result = client.formatMetricData(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Listing data series, each with timestamped datapoints');
+      expect(result).toContain('Listing data series from environment testAlias, each with timestamped datapoints');
       expect(result).toContain('resolution: 1h');
       expect(result).toContain('metricId: builtin:host.cpu.usage');
       expect(result).toContain('dimensionData: {\"dt.entity.host\":\"HOST-1D1EA84AB7DF62B4\"}');
@@ -202,17 +253,25 @@ describe('MetricsApiClient', () => {
     });
 
     it('should format list when sparse data series', async () => {
-      const mockResponse = {
-        result: [
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
           {
-            data: [{}],
-            metricId: 'builtin:host.cpu.usage',
+            result: [
+              {
+                data: [{}],
+                metricId: 'builtin:host.cpu.usage',
+              },
+            ],
           },
         ],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      ]);
 
-      const response = await client.queryMetrics({ metricSelector: 'my-selector', from: 'now-1h', to: 'now' });
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
+      const response = await client.queryMetrics(
+        { metricSelector: 'my-selector', from: 'now-1h', to: 'now' },
+        'testAlias',
+      );
       const result = client.formatMetricData(response);
 
       expect(response).toEqual(mockResponse);
@@ -223,27 +282,38 @@ describe('MetricsApiClient', () => {
     });
 
     it('should format list when empty', async () => {
-      const mockResponse = {};
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([['testAlias', {}]]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.queryMetrics({ metricSelector: 'my-selector', from: 'now-1h', to: 'now' });
+      const response = await client.queryMetrics(
+        { metricSelector: 'my-selector', from: 'now-1h', to: 'now' },
+        'testAlias',
+      );
       const result = client.formatMetricData(response);
 
       expect(response).toEqual(mockResponse);
-      expect(result).toContain('Listing data series (no datapoints found)');
+      expect(result).toContain('Listing data series from environment testAlias (no datapoints found)');
     });
 
     it('should handle empty list', async () => {
-      const mockResponse = {
-        totalCount: 0,
-        result: [],
-      };
-      mockAuthClient.makeRequest.mockResolvedValue(mockResponse);
+      const mockResponse = new Map<string, any>([
+        [
+          'testAlias',
+          {
+            totalCount: 0,
+            result: [],
+          },
+        ],
+      ]);
+      mockAuthManager.makeRequests.mockResolvedValue(mockResponse);
 
-      const response = await client.queryMetrics({ metricSelector: 'my-selector', from: 'now-1h', to: 'now' });
+      const response = await client.queryMetrics(
+        { metricSelector: 'my-selector', from: 'now-1h', to: 'now' },
+        'testAlias',
+      );
       const result = client.formatMetricData(response);
 
-      expect(result).toContain('Listing data series (no datapoints found)');
+      expect(result).toContain('Listing data series from environment testAlias (no datapoints found)');
     });
   });
 });

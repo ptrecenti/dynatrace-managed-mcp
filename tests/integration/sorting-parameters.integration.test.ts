@@ -7,142 +7,162 @@ import { ProblemsApiClient } from '../../src/capabilities/problems-api';
 import { SecurityApiClient } from '../../src/capabilities/security-api';
 import { SloApiClient } from '../../src/capabilities/slo-api';
 import { LogsApiClient } from '../../src/capabilities/logs-api';
-import { ManagedAuthClient } from '../../src/authentication/managed-auth-client';
-import { getManagedEnvironmentConfig } from '../../src/utils/environment';
+import { ManagedAuthClientManager } from '../../src/authentication/managed-auth-client';
+import { getManagedEnvironmentConfigs, validateEnvironments } from '../../src/utils/environment';
 import { config } from 'dotenv';
+import { MetricsApiClient } from '../../src/capabilities/metrics-api';
+import { EventsApiClient } from '../../src/capabilities/events-api';
 
 // Load environment variables
 config();
 
 let skip = false;
-if (!process.env.DT_MANAGED_ENVIRONMENT || !process.env.DT_API_ENDPOINT_URL || !process.env.DT_MANAGED_API_TOKEN) {
+if (!process.env.DT_ENVIRONMENT_CONFIGS) {
   console.log('Skipping integration tests - environment not configured');
   skip = true;
 }
 
 (skip ? describe.skip : describe)('Sorting Parameters Integration Tests', () => {
-  let authClient: ManagedAuthClient;
+  let metricsClient: MetricsApiClient;
+  let logsClient: LogsApiClient;
+  let eventsClient: EventsApiClient;
   let entitiesClient: EntitiesApiClient;
   let problemsClient: ProblemsApiClient;
   let securityClient: SecurityApiClient;
   let sloClient: SloApiClient;
-  let logsClient: LogsApiClient;
 
   beforeAll(() => {
-    const config = getManagedEnvironmentConfig();
-    authClient = new ManagedAuthClient({
-      apiBaseUrl: config.apiUrl,
-      dashboardBaseUrl: config.dashboardUrl,
-      apiToken: config.apiToken,
-    });
-    entitiesClient = new EntitiesApiClient(authClient);
-    problemsClient = new ProblemsApiClient(authClient);
-    securityClient = new SecurityApiClient(authClient);
-    sloClient = new SloApiClient(authClient);
-    logsClient = new LogsApiClient(authClient);
-  });
+    const config = getManagedEnvironmentConfigs();
+    const validEnvironments = validateEnvironments(config);
 
+    const authManager = new ManagedAuthClientManager(validEnvironments['valid_configs']);
+
+    metricsClient = new MetricsApiClient(authManager);
+    logsClient = new LogsApiClient(authManager);
+    eventsClient = new EventsApiClient(authManager);
+    entitiesClient = new EntitiesApiClient(authManager);
+    problemsClient = new ProblemsApiClient(authManager);
+    securityClient = new SecurityApiClient(authManager);
+    sloClient = new SloApiClient(authManager);
+  });
   describe('Entities API Sorting', () => {
     it('should accept ascending sort parameter', async () => {
       await expect(
-        entitiesClient.queryEntities({
-          entitySelector: 'type(HOST)',
-          pageSize: 5,
-          sort: '+name',
-        }),
+        entitiesClient.queryEntities(
+          {
+            entitySelector: 'type(HOST)',
+            pageSize: 5,
+            sort: '+name',
+          },
+          'testAlias',
+        ),
       ).resolves.not.toThrow();
     });
 
     it('should accept descending sort parameter', async () => {
       await expect(
-        entitiesClient.queryEntities({
-          entitySelector: 'type(SERVICE)',
-          pageSize: 5,
-          sort: '-name',
-        }),
+        entitiesClient.queryEntities(
+          {
+            entitySelector: 'type(SERVICE)',
+            pageSize: 5,
+            sort: '-name',
+          },
+          'testAlias',
+        ),
       ).resolves.not.toThrow();
     });
 
     it('should work without sort parameter (backward compatibility)', async () => {
       await expect(
-        entitiesClient.queryEntities({
-          entitySelector: 'type(HOST)',
-          pageSize: 5,
-        }),
+        entitiesClient.queryEntities(
+          {
+            entitySelector: 'type(HOST)',
+            pageSize: 5,
+          },
+          'testAlias',
+        ),
       ).resolves.not.toThrow();
     });
   });
 
   describe('Problems API Sorting', () => {
     it('should accept ascending sort parameter', async () => {
-      await expect(problemsClient.listProblems({ sort: '+startTime', pageSize: 5 })).resolves.not.toThrow();
+      await expect(
+        problemsClient.listProblems({ sort: '+startTime', pageSize: 5 }, 'testAlias'),
+      ).resolves.not.toThrow();
     });
 
     it('should accept descending sort parameter', async () => {
-      await expect(problemsClient.listProblems({ sort: '-startTime', pageSize: 5 })).resolves.not.toThrow();
+      await expect(
+        problemsClient.listProblems({ sort: '-startTime', pageSize: 5 }, 'testAlias'),
+      ).resolves.not.toThrow();
     });
 
     it('should work without sort parameter (backward compatibility)', async () => {
-      await expect(problemsClient.listProblems({ pageSize: 5 })).resolves.not.toThrow();
+      await expect(problemsClient.listProblems({ pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
   });
 
   describe('Security API Sorting', () => {
     it('should accept ascending sort parameter', async () => {
-      await expect(securityClient.listSecurityProblems({ sort: '+riskAssessment.riskScore' })).resolves.not.toThrow();
+      await expect(
+        securityClient.listSecurityProblems({ sort: '+riskAssessment.riskScore' }, 'testAlias'),
+      ).resolves.not.toThrow();
     });
 
     it('should accept descending sort parameter', async () => {
-      await expect(securityClient.listSecurityProblems({ sort: '-riskAssessment.riskScore' })).resolves.not.toThrow();
+      await expect(
+        securityClient.listSecurityProblems({ sort: '-riskAssessment.riskScore' }, 'testAlias'),
+      ).resolves.not.toThrow();
     });
 
     it('should work without sort parameter (backward compatibility)', async () => {
-      await expect(securityClient.listSecurityProblems()).resolves.not.toThrow();
+      await expect(securityClient.listSecurityProblems(undefined, 'testAlias')).resolves.not.toThrow();
     });
   });
 
   describe('SLO API Sorting', () => {
     it('should accept ascending sort parameter', async () => {
-      await expect(sloClient.listSlos({ sort: 'name', pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ sort: 'name', pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
 
     it('should accept descending sort parameter', async () => {
-      await expect(sloClient.listSlos({ sort: '-name', pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ sort: '-name', pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
 
     it('should work without sort parameter (backward compatibility)', async () => {
-      await expect(sloClient.listSlos({ pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
 
     it('should accept evaluate parameter', async () => {
-      await expect(sloClient.listSlos({ evaluate: true, pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ evaluate: true, pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
 
     it('should accept enabledSlos parameter', async () => {
-      await expect(sloClient.listSlos({ enabledSlos: 'true', pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ enabledSlos: 'true', pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
 
     it('should accept showGlobalSlos parameter', async () => {
-      await expect(sloClient.listSlos({ showGlobalSlos: false, pageSize: 5 })).resolves.not.toThrow();
+      await expect(sloClient.listSlos({ showGlobalSlos: false, pageSize: 5 }, 'testAlias')).resolves.not.toThrow();
     });
   });
 
   describe('Logs Sorting', () => {
     it('should accept ascending sort parameter', async () => {
       await expect(
-        logsClient.queryLogs({ sort: '+timestamp', query: 'error', from: 'now-1h', to: 'now', limit: 5 }),
+        logsClient.queryLogs({ sort: '+timestamp', query: 'error', from: 'now-1h', to: 'now', limit: 5 }, 'testAlias'),
       ).resolves.not.toThrow();
     });
 
     it('should accept descending sort parameter', async () => {
       await expect(
-        logsClient.queryLogs({ sort: '-timestamp', query: 'error', from: 'now-1h', to: 'now', limit: 5 }),
+        logsClient.queryLogs({ sort: '-timestamp', query: 'error', from: 'now-1h', to: 'now', limit: 5 }, 'testAlias'),
       ).resolves.not.toThrow();
     });
 
     it('should work without sort parameter (backward compatibility)', async () => {
       await expect(
-        logsClient.queryLogs({ query: 'error', from: 'now-1h', to: 'now', limit: 5 }),
+        logsClient.queryLogs({ query: 'error', from: 'now-1h', to: 'now', limit: 5 }, 'testAlias'),
       ).resolves.not.toThrow();
     });
   });
